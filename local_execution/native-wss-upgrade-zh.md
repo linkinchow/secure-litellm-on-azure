@@ -155,6 +155,10 @@ API WAF 为 Detection 时，规则匹配仍只是检测记录；不能据此称�
 ```
 
 `--model` 是 LiteLLM 别名，不是 Azure deployment；公网 `/v1/models` 仍未开放。
+不要将示例 `coding` 当作环境中必然存在的别名。在 Runner 上可用
+`jq -r '.application.models[] | [.modelGroup, .deploymentName] | @tsv' "$CFG"`
+核对本地映射：第一列是客户端别名，第二列是 Azure deployment。以实际已加载配置和
+Admin 模型列表为准，选择支持 Responses/工具调用且验收 v-key 获准使用的别名。
 脚本交互隐藏输入受限 v-key，不在命令行、环境变量或报告中保存 Key。
 `--direct` 不使用环境代理；客户必须通过企业代理时去掉它，并验证该代理支持 WSS。
 输出文件独占创建，权限 0600，不记录原始请求/响应、continuation ID 或函数 call ID。
@@ -204,6 +208,10 @@ continuation、工具回传失败，应处理实际模型/上游兼容性，不�
 | `failureCode=error` 或 `response.failed` | 查看白名单内的错误 code/type/param；详细原因由授权运维人员在私有日志中核对 |
 | `failureCode=response.incomplete`、`incompleteReason=max_output_tokens` | 输出预算内未完成，不算通过；评估模型推理预算，不盲目提高 token 上限 |
 | `failureCode=websocket-timeout` 或 `transport-error` | 当前阶段超时/传输失败，检查同一时间窗的服务及上游连接日志 |
+
+若私有日志抛出 `ProxyModelNotFoundError`，提示 `Invalid model name passed in model=...`，
+说明本次请求没有找到可用模型路由，尚未进入 Azure 上游生成。先核对请求别名与实际
+已加载模型、团队映射和 Key 权限；不重跑 edge，不为自动发现开放公网 `/v1/models`。
 
 未知错误字段映射为 `unrecognized`，不保存后端 message、正文、ID 或 Key。
 旧版报告只有 `failureType=ProbeError` 时无法区分上述情况；更新验收脚本后，

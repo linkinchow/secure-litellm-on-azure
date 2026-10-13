@@ -71,6 +71,9 @@ Admin来源IP白名单不是TLS客户端身份认证。共享NAT后的主体都�
 
 入口发布器可以读取外部准备好的API/Admin源站证书。当前自动ACME只覆盖API；Admin源站也必须由Microsoft信任列表中的公有CA签发，不能继续使用仅安装到Runner或管理浏览器的企业私有CA来回源。
 
+客户已提供两套证书和私钥时，具体文件整理、Key Vault Secret 上传与发布流程见
+[客户证书导入 Runbook](litellm-ingress-certificate-import-runbook-zh.md)。
+
 ## 4. 设计理由与取舍
 
 当前应用只有明确分离的 API 与管理入口，路由和后端服务由受控配置生成，不需要入口控制器动态发现任意应用 Ingress。

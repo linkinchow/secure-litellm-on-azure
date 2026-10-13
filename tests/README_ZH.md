@@ -43,6 +43,44 @@ python tests/test_all_deployments.py \
 
 Entra代理路径只允许有限的企业授权协议；native路径只允许固定推理POST路径、virtual key，以及通过独立Front Door来源IP白名单后的用户名/密码Admin。旧网关的Azure风格路径、图像/视频、WebSocket或加密多轮测试结果不能证明任一新入口兼容，更不能作为绕过策略的理由。第一阶段已选择原生Spend Logs，须验实际正文/身份与Key关联、查询权限、清理/容量/备份和写入故障；自建L3恢复/治理测试仅适用于Entra可选增强，不能代替原生落库验收。native配置和阶段门禁已适配，但真实virtual-key拒绝矩阵、Admin批准/未批准公网出口、错误/正确UI密码、双平面Front Door Header绑定和UI密码交付仍须按指南验收。真实客户协议、私网回源/身份、数据库迁移和回退仍须通过对应[阶段门禁](../docs/customer-migration-guide-zh.md)。
 
+## 低频网络与边缘防护验证（不依赖 Codex）
+
+[edge_security_probe.py](edge_security_probe.py) 使用 Python 3 标准库，适合在 laptop 上执行批准目标的低频验证。
+默认发送 9 个请求，加入 Admin 观察后为 11 个，加入合法推理基线后最多 12 个；
+串行请求间隔 2 秒、单次超时 15 秒，无并发、无重试，网络失败、429 或 5xx 时停止。
+不是压力测试或 DDoS 验收；不会验证每分钟 600 次等速率阈值，也不会改变 Azure 配置。
+
+```powershell
+python .\tests\edge_security_probe.py `
+  --api-url "https://llm-api.<customer-domain>" `
+  --admin-url "https://llm-admin.<customer-domain>" `
+  --confirm-authorized-target `
+  --direct `
+  --output-json "$env:TEMP\edge-security-observations.json"
+```
+
+必须替换为自己有权测试的实际域名；输出文件必须尚不存在。
+`--direct` 忽略环境代理，不保证绕过 VPN/TUN 或 Windows 系统代理；用与浏览器相同的出口时需单独确认实际日志 IP。
+覆盖缺失/无效 Key、API 管理路径隔离、GET/TRACE 方法、两个小型合成 XSS/SQLi query 样本，以及可选 Admin 来源观察。
+异常样本不携带真实 v-key、不调用有效模型；样本只是规则检测信号，不执行脚本、访问文件或提取数据。
+Admin 200/重定向/403 都只记录观察，需结合来源和 WAF 规则判定；未登录 UI 可打开不代表已取得管理权限。
+
+可选追加 **一次真实推理**，在同一命令增加 `--baseline-model "<实际模型组>" --prompt-key`。
+它会隐藏输入受限 v-key，可能产生模型费用；不要输入 Master Key，不要把 Key 写在命令行。
+也可使用进程环境 `LITELLM_API_KEY`，不加 `--prompt-key`；默认测试不会读取它。
+合法基线使用 Responses API，输出上限 64 Token；模型/Key/API 参数不兼容会记录失败，不自动重试。
+
+JSON 只保存状态、时间、案例与 `X-Azure-Ref`，不保存响应正文或凭据。报告仍应保留在 Git 之外；
+Windows 文件权限需按本机策略保护。退出码 0 仅表示完成且状态在预期集合中，不是安全验收通过。
+没有边缘 tracking reference、只有 403、或样本被认证层拒绝，都不能证明 WAF 规则已匹配。
+
+将报告的时间与 `trackingReference` 关联 AzureDiagnostics 的 WAF 和 Access 日志，
+核对 `ruleName`、`action`、`SocketIP`、HTTP 状态以及实时 Policy 模式：
+**Detection 只检测，不应声称规则在 Prevention 强制阻断。**
+2026-10-10只读查询发现参考环境 API 为 Detection、Admin 为 Prevention；这是当时状态，执行测试时必须重新核对。
+API 路径只开放固定推理 POST，`/v1/models` 和 API 域名的 `/ui/` 应被拒绝。
+真实限速和容量/DDoS测试需另定窗口、上限、监控、停止条件及 Azure 支持安排；禁止用此脚本的少量结果作相应证明。
+
 ## Codex 缓存命中与会话亲和测试
 
 以下操作会调用真实Codex和模型服务；应在批准的旧基线或隔离环境中执行，模型名称使用客户实际别名，结果保留在Git之外。示例数值不是客户性能承诺。

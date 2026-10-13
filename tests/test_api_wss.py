@@ -19,7 +19,9 @@ from tests.test_private_ingress_runtime import ingress_config
 
 def live_waf(identifier):
     return {
-        "id": identifier, "location": "Global", "sku": {"name": "Premium_AzureFrontDoor"},
+        "id": identifier, "location": "Global",
+        "sku": {"name": "Premium_AzureFrontDoor", "capacity": None, "family": None,
+                "model": None, "size": None, "tier": None},
         "tags": {"owner": "test"},
         "properties": {
             "provisioningState": "Succeeded", "resourceState": "Enabled", "securityPolicyLinks": [],
@@ -104,6 +106,7 @@ class ApiWssTests(unittest.TestCase):
         for key in ("policySettings", "managedRules"):
             self.assertEqual(desired["properties"][key], live["properties"][key])
         self.assertEqual(desired["tags"], live["tags"])
+        self.assertEqual(desired["sku"], {"name": "Premium_AzureFrontDoor"})
         self.assertNotIn("securityPolicyLinks", desired["properties"])
         new_live = {**live, "properties": {**live["properties"], **desired["properties"]}}
         for condition in new_live["properties"]["customRules"]["rules"][1]["matchConditions"]:
@@ -113,6 +116,16 @@ class ApiWssTests(unittest.TestCase):
         for rule in new_live["properties"]["customRules"]["rules"][:-1]:
             rule.update(groupBy=[], rateLimitDurationInMinutes=None, rateLimitThreshold=None)
         self.assertEqual(desired_waf(new_live, live["id"])["properties"]["policySettings"]["mode"], "Detection")
+
+    def test_sku_requires_valid_name_and_excludes_get_only_fields(self):
+        for sku in (None, {}, {"name": None}, {"name": "Classic_AzureFrontDoor"}, "invalid"):
+            live = live_waf("/synthetic/api")
+            live["sku"] = sku
+            with self.subTest(sku=sku), self.assertRaisesRegex(MigrationError, "reviewed.*SKU"):
+                desired_waf(live, live["id"])
+        live = live_waf("/synthetic/api")
+        live["sku"].update(tier="read-only-tier", capacity=1)
+        self.assertEqual(desired_waf(live, live["id"])["sku"], {"name": "Premium_AzureFrontDoor"})
 
     def test_live_azure_null_and_empty_defaults_do_not_hide_rule_changes(self):
         live = live_waf("/synthetic/api")

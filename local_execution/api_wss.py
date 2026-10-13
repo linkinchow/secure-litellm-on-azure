@@ -35,6 +35,9 @@ def normalized_rule(rule):
 
 def desired_waf(live, identifier):
     require(live.get("id", "").lower() == identifier.lower(), "API WAF scope mismatch")
+    sku = live.get("sku")
+    require(isinstance(sku, dict) and sku.get("name") == "Premium_AzureFrontDoor",
+            "API WAF must retain the reviewed Premium_AzureFrontDoor SKU")
     properties = live.get("properties", {})
     allowed = {"policySettings", "customRules", "managedRules", "frontendEndpointLinks",
                "securityPolicyLinks", "routingRuleLinks", "resourceState", "provisioningState"}
@@ -62,7 +65,7 @@ def desired_waf(live, identifier):
     desired["customRules"]["rules"] = [*api_method_rules(), copy.deepcopy(rate[0])]
     resource = {"type": "Microsoft.Network/frontDoorWebApplicationFirewallPolicies",
                 "apiVersion": "2024-02-01", "name": identifier.rsplit("/", 1)[1],
-                "location": live["location"], "sku": copy.deepcopy(live["sku"]), "properties": desired}
+                "location": live["location"], "sku": {"name": sku["name"]}, "properties": desired}
     if "tags" in live:
         resource["tags"] = copy.deepcopy(live["tags"])
     return resource

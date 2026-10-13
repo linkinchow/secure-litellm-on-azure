@@ -109,6 +109,9 @@ payload含原UID/resourceVersion避免覆盖并发变更，管理字段结构也
 `llmgw-<environment>-s9-api-wss` 执行 Incremental 更新，不覆盖原 Stage9 edge 输出。
 What-if 只能修改 API custom rules；mode、managed rules、rate rule、tags 均按 live 快照保留。
 实际 API 关联从 `api-waf` security policy 解析，不能猜名字，也不能误选 Admin WAF。
+Azure GET的SKU响应可能包含`capacity/family/model/size/tier`等null字段，
+但WAF部署API只支持`sku.name`。生成器只输出经核验的
+`{"name":"Premium_AzureFrontDoor"}`，不直接回写GET的完整SKU对象。
 陌生规则、额外属性、计划/代码/配置变化或执行前 live 漂移都会阻止更新。
 完成后再次读取 ARM 核验规则；失败看 `wss-summary.json`，不要把部署部分成功当作验收通过。
 

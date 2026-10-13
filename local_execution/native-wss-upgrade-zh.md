@@ -84,6 +84,13 @@ payload含原UID/resourceVersion避免覆盖并发变更，管理字段结构也
 核对现状后重新plan，不复用旧哈希。Stage4同时保留FDID/路由哈希注解并更新证书注解；
 新版`edge-bind`只patch路由键和两项绑定注解，不再接管整个spec/data。
 
+所有权识别必须显式使用`kubectl get --show-managed-fields -o json`：
+仅指定`-o json`仍会默认隐藏managedFields。修复版本已对ConfigMap预读和其他
+入口对象读取均添加该参数；现有native ConfigMap/Deployment若缺少所有权元数据，
+会明确阻断，而不是误判为没有旧管理者。若合并所有权交接修复后仍在普通
+`dry-run-api`报同一冲突，应确认Runner还包含此读取修复，再重新plan。
+真实kubectl的本地合成API回归覆盖了隐藏/保留字段差异；不代替目标AKS的实际plan验收。
+
 ### 2.2 只更新已有 API WAF 的方法规则
 
 ```bash

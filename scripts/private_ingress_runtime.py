@@ -29,7 +29,9 @@ def ingress_ownership_handoff(document, current, native):
     if not native or not current or document["kind"] not in {"ConfigMap", "Deployment"}:
         return False
     root = "f:data" if document["kind"] == "ConfigMap" else "f:spec"
-    managers = current["metadata"].get("managedFields", [])
+    managers = current["metadata"].get("managedFields")
+    require(isinstance(managers, list) and managers,
+            "Native ingress ownership metadata is missing; read objects with --show-managed-fields")
     legacy = any(entry.get("manager") == "kubectl-patch" and root in entry.get("fieldsV1", {})
                  for entry in managers)
     if not legacy:
@@ -325,7 +327,7 @@ def deploy_private_ingress(config, operation, revision, directory, approved):
         documents = [document for document in render_ingress(config, plane, image, settings[plane]["allowedCidrs"]) if document["kind"] != "Namespace"]
         preserved_config_map = None
         if authentication_mode == "native":
-            preserved_config_map = json.loads(run_command([*scoped, "get", "ConfigMap", namespace, "--ignore-not-found", "-o", "json"], directory, f"before-binding-{plane}-configmap") or "null")
+            preserved_config_map = json.loads(run_command([*scoped, "get", "ConfigMap", namespace, "--ignore-not-found", "--show-managed-fields", "-o", "json"], directory, f"before-binding-{plane}-configmap") or "null")
             documents = preserve_native_front_door_binding(config, documents, preserved_config_map)
         current_service = None
         ordinary, handoffs[plane] = [], []
@@ -334,7 +336,7 @@ def deploy_private_ingress(config, operation, revision, directory, approved):
                 pod = document["spec"]["template"]
                 pod["metadata"].setdefault("annotations", {})["llmgw/certificate-sha256"] = material["sha256"]
                 pod["spec"]["volumes"][1]["secret"]["secretName"] = namespace + "-tls-" + material["sha256"][:16]
-            current = preserved_config_map if document["kind"] == "ConfigMap" and preserved_config_map is not None else json.loads(run_command([*scoped, "get", document["kind"], document["metadata"]["name"], "--ignore-not-found", "-o", "json"], directory, f"before-{plane}-{document['kind']}") or "null")
+            current = preserved_config_map if document["kind"] == "ConfigMap" and preserved_config_map is not None else json.loads(run_command([*scoped, "get", document["kind"], document["metadata"]["name"], "--ignore-not-found", "--show-managed-fields", "-o", "json"], directory, f"before-{plane}-{document['kind']}") or "null")
             if document["kind"] == "Service":
                 current_service = current
             if current:

@@ -189,6 +189,28 @@ API WAF 为 Detection 时，规则匹配仍只是检测记录；不能据此称�
 continuation、工具回传失败，应处理实际模型/上游兼容性，不通过开放全 GET、
 绕过 FDID 或增加 WAF Allow 来掩盖错误。
 
+### 3.1 握手成功但后续验收失败
+
+`handshakeStatus=101` 只说明授权连接成功升级为 WebSocket，不能证明上游生成、
+工具调用和 continuation 已完成。不要因此重跑 edge-prepare 或扩大 WAF 放行范围。
+
+查看脱敏报告中的 `phase`、`failureCode`、`failureDetails` 和已完成的 `turns`：
+
+| 报告内容 | 定位方向 |
+|---|---|
+| `phase=tool-request` | 第一轮工具请求尚未完成，检查模型/上游 WSS、请求参数及 Key 权限 |
+| `phase=tool-call-validation`、`failureCode=expected-tool-call-missing` | 第一轮完成但没有符合要求的函数调用，检查模型工具能力和返回协议 |
+| `phase=tool-result-continuation` 且已有一轮 `completed=true` | 第一轮完成，问题在工具结果回传或 `previous_response_id` 续接 |
+| `failureCode=error` 或 `response.failed` | 查看白名单内的错误 code/type/param；详细原因由授权运维人员在私有日志中核对 |
+| `failureCode=response.incomplete`、`incompleteReason=max_output_tokens` | 输出预算内未完成，不算通过；评估模型推理预算，不盲目提高 token 上限 |
+| `failureCode=websocket-timeout` 或 `transport-error` | 当前阶段超时/传输失败，检查同一时间窗的服务及上游连接日志 |
+
+未知错误字段映射为 `unrecognized`，不保存后端 message、正文、ID 或 Key。
+旧版报告只有 `failureType=ProbeError` 时无法区分上述情况；更新验收脚本后，
+用新的报告文件名重新执行一次有界验收。不需要为仅更新验收脚本而重跑云上部署；
+如果随后需要执行发布门禁，则按新代码版本重新生成绑定回执和发布报告。
+去掉 `--tool-roundtrip` 可单独检查普通两轮续接，但其通过不代替工具往返验收。
+
 ## 4. 长连接限制与回退
 
 [Microsoft 官方说明](https://learn.microsoft.com/en-us/azure/frontdoor/standard-premium/websocket)：

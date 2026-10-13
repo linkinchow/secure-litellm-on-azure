@@ -107,3 +107,70 @@ class ResponsesWssProbeTests(unittest.TestCase):
             self.assertFalse(json.loads(path.read_text())["accepted"])
             self.assertEqual(json.loads(path.read_text())["phase"], "missing-key")
             self.assertNotIn("private-error", path.read_text())
+
+    def test_failure_diagnostics_are_allowlisted(self):
+        cases = [
+            ({"type": "error", "status": 400, "error": {
+                "code": "unsupported_parameter", "type": "invalid_request_error",
+                "param": "tool_choice", "message": "private-key private-body"}},
+             {"errorCode": "unsupported_parameter", "errorType": "invalid_request_error",
+              "errorParam": "tool_choice", "upstreamStatus": 400}),
+            ({"type": "response.failed", "response": {"error": {
+                "code": "private-key", "type": ["private-body"], "param": "private-param"}}},
+             {"errorCode": "unrecognized", "errorType": "unrecognized", "errorParam": "unrecognized"}),
+            ({"type": "response.incomplete", "response": {
+                "incomplete_details": {"reason": "max_output_tokens"}, "output": ["private-body"]}},
+             {"incompleteReason": "max_output_tokens"}),
+            ({"type": "response.incomplete", "response": {
+                "incomplete_details": {"reason": {"private-body": "private-key"}}}},
+             {"incompleteReason": "unrecognized"}),
+        ]
+        for event, expected in cases:
+            connection = Mock()
+            connection.recv.side_effect = [
+                json.dumps({"type": "private-key"}), json.dumps(event)]
+            with self.subTest(event=event), self.assertRaises(ProbeError) as failure:
+                read_completed_response(connection)
+            self.assertEqual(failure.exception.code, event["type"])
+            self.assertEqual(failure.exception.diagnostics,
+                             {"eventTypes": sorted(["other", event["type"]]), **expected})
+            self.assertNotIn("private", json.dumps(failure.exception.diagnostics))
+
+    def test_failed_tool_continuation_preserves_first_turn(self):
+        with tempfile.TemporaryDirectory() as name:
+            path = Path(name) / "failure.json"
+            args = SimpleNamespace(confirm_authorized_target=True, api_url="https://api.example.com",
+                                   model="coding", direct=True, tool_roundtrip=True, output_json=path)
+            connection = Mock()
+            connection.getstatus.return_value = 101
+            connection.recv.side_effect = [
+                completed(output=[{"type": "function_call", "name": "workshop_ping",
+                                   "call_id": "private-call"}]),
+                json.dumps({"type": "error", "error": {
+                    "code": "previous_response_not_found", "message": "private-response private-key"}}),
+            ]
+            with patch("tests.responses_wss_probe.getpass.getpass", return_value="private-key"), \
+                    patch("tests.responses_wss_probe.rejected", return_value={"status": 403, "denied": True}), \
+                    patch("tests.responses_wss_probe.connect", return_value=connection), \
+                    self.assertRaises(ProbeError):
+                run(args)
+            report = json.loads(path.read_text())
+            self.assertFalse(report["accepted"])
+            self.assertEqual(report["phase"], "tool-result-continuation")
+            self.assertEqual(report["failureCode"], "error")
+            self.assertEqual(report["failureDetails"]["errorCode"], "previous_response_not_found")
+            self.assertEqual(len(report["turns"]), 1)
+            self.assertTrue(report["turns"][0]["completed"])
+            self.assertNotIn("private", path.read_text())
+            connection.close.assert_called_once()
+
+    def test_missing_tool_call_is_distinct_from_backend_failure(self):
+        connection = Mock()
+        connection.recv.return_value = completed()
+        progress = {}
+        with self.assertRaises(ProbeError) as failure:
+            tool_turn(connection, "coding", progress)
+        self.assertEqual(failure.exception.code, "expected-tool-call-missing")
+        self.assertEqual(progress["phase"], "tool-call-validation")
+        self.assertEqual(len(progress["turns"]), 1)
+        self.assertEqual(connection.send.call_count, 1)

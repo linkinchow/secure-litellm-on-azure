@@ -113,8 +113,16 @@ class ProxyManifestTests(unittest.TestCase):
             def change(kind, name, operations, selected=plane):
                 self.assertEqual(name, f"llm-{selected}-ingress")
                 self.assertEqual(operations[0]["value"], resources[selected][kind]["metadata"]["uid"])
-                target = operations[-1]["path"].removeprefix("/")
-                resources[selected][kind][target] = copy.deepcopy(operations[-1]["value"])
+                for operation in operations:
+                    parts = [part.replace("~1", "/").replace("~0", "~") for part in operation["path"].split("/")[1:]]
+                    target = resources[selected][kind]
+                    for part in parts[:-1]:
+                        target = target[part]
+                    if operation["op"] == "test":
+                        self.assertEqual(target[parts[-1]], operation["value"])
+                    else:
+                        self.assertNotIn(operation["path"], {"/spec", "/data"})
+                        target[parts[-1]] = copy.deepcopy(operation["value"])
             clients[plane].patch.side_effect = change
         azure = Mock()
         def cloud(arguments):

@@ -41,7 +41,28 @@ python tests/test_all_deployments.py \
 
 不要把Master Key放进命令行，不使用客户真实Prompt，不上传原始响应到公开日志。脚本为旧路由同时发送Bearer和`api-key`头。Chat和图像分别测试OpenAI/Azure风格路径；Sora仅检查模型注册，不证明视频生成功能正常。
 
-Entra代理路径只允许有限的企业授权协议；native路径只允许固定推理POST路径、virtual key，以及通过独立Front Door来源IP白名单后的用户名/密码Admin。旧网关的Azure风格路径、图像/视频、WebSocket或加密多轮测试结果不能证明任一新入口兼容，更不能作为绕过策略的理由。第一阶段已选择原生Spend Logs，须验实际正文/身份与Key关联、查询权限、清理/容量/备份和写入故障；自建L3恢复/治理测试仅适用于Entra可选增强，不能代替原生落库验收。native配置和阶段门禁已适配，但真实virtual-key拒绝矩阵、Admin批准/未批准公网出口、错误/正确UI密码、双平面Front Door Header绑定和UI密码交付仍须按指南验收。真实客户协议、私网回源/身份、数据库迁移和回退仍须通过对应[阶段门禁](../docs/customer-migration-guide-zh.md)。
+Entra代理路径只允许有限的企业授权协议；native路径允许固定推理POST路径、两个Responses路径的合法GET WebSocket Upgrade、virtual key，以及通过独立Front Door来源IP白名单后的用户名/密码Admin。旧网关的Azure风格路径、图像/视频、WebSocket或加密多轮测试结果不能证明任一新入口兼容，更不能作为绕过策略的理由。第一阶段已选择原生Spend Logs，须验实际正文/身份与Key关联、查询权限、清理/容量/备份和写入故障；自建L3恢复/治理测试仅适用于Entra可选增强，不能代替原生落库验收。native配置和阶段门禁已适配，但真实virtual-key拒绝矩阵、Admin批准/未批准公网出口、错误/正确UI密码、双平面Front Door Header绑定和UI密码交付仍须按指南验收。真实客户协议、私网回源/身份、数据库迁移和回退仍须通过对应[阶段门禁](../docs/customer-migration-guide-zh.md)。
+
+## Responses WSS 两轮与工具验证
+
+[WSS部署/升级执行单](../local_execution/native-wss-upgrade-zh.md)包含客户首次部署与已发布canary的安全升级顺序。
+[responses_wss_probe.py](responses_wss_probe.py)交互隐藏输入受限v-key，验证缺Key/错误Key握手拒绝、
+合法101及同一连接两轮完成；`--tool-roundtrip`额外验证合成函数调用和固定本地结果回传，不执行外部工具。
+两轮最多各2048输出token，可能产生模型费用，无并发/重试，不记录原始响应及凭据，报告独占创建且权限0600。
+
+```bash
+.venv/bin/python -m tests.responses_wss_probe \
+  --api-url "https://llm-api.<customer-domain>" --model "coding" \
+  --confirm-authorized-target --direct --tool-roundtrip \
+  --output-json "/tmp/responses-wss-$(date -u +%Y%m%dT%H%M%SZ).json"
+
+.venv/bin/python -m unittest tests.test_api_wss tests.test_responses_wss_probe
+RUN_PRIVATE_INGRESS_CONTAINER_TESTS=1 .venv/bin/python -m unittest tests.test_private_ingress_container
+```
+
+Docker测试用固定Traefik镜像、严格TLS和合成后端验证两条路径的101/双向消息、
+其他路径/错误FDID拒绝，不代替Azure模型、Key权限及Spend Logs云上验收。
+Front Door WAF只检查握手，不检查后续帧；预算、长连接撤销、每轮限流、审计、亲和及真实coding agent仍须另验。
 
 ## 低频网络与边缘防护验证（不依赖 Codex）
 

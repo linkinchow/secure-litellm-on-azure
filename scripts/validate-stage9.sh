@@ -18,7 +18,7 @@ az bicep build-params --file infra/edge-origin/main.bicepparam --outfile "$outpu
 kubectl kustomize deploy/validation/stage9 > "$output_dir/stage9.yaml"
 "$python_bin" scripts/validate_stage9.py "$output_dir/edge.json" "$output_dir/origin.json" "$output_dir/stage9.yaml"
 echo "[3/4] Release evidence, What-if and bypass negative tests"
-"$python_bin" -m unittest tests.test_stage9_release tests.test_stage9_templates tests.test_private_ingress_probes
+"$python_bin" -m unittest tests.test_stage9_release tests.test_stage9_templates tests.test_private_ingress_probes tests.test_api_wss tests.test_responses_wss_probe
 echo "[4/4] Shell and OSS boundary"
 bash -n scripts/validate-stage9.sh
 "$python_bin" scripts/validate_product_boundary.py

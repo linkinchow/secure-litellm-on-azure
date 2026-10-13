@@ -209,12 +209,45 @@ resource waf 'Microsoft.Network/frontDoorWebApplicationFirewallPolicies@2024-02-
     customRules: {
       rules: [
         {
-          name: 'BlockNonPost'
+          name: 'BlockUnsupportedApiMethods'
           priority: 10
           enabledState: 'Enabled'
           ruleType: 'MatchRule'
           action: 'Block'
-          matchConditions: [{ matchVariable: 'RequestMethod', operator: 'Equal', negateCondition: true, matchValue: ['POST'] }]
+          matchConditions: [{ matchVariable: 'RequestMethod', operator: 'Equal', negateCondition: true, matchValue: ['POST', 'GET'] }]
+        }
+        {
+          name: 'BlockNonResponsesGet'
+          priority: 11
+          enabledState: 'Enabled'
+          ruleType: 'MatchRule'
+          action: 'Block'
+          matchConditions: [
+            { matchVariable: 'RequestMethod', operator: 'Equal', matchValue: ['GET'] }
+            { matchVariable: 'RequestUri', operator: 'RegEx', negateCondition: true, matchValue: ['^(https://[^/?#]+)?/(v1/)?responses(\\?.*)?$'] }
+          ]
+        }
+        {
+          name: 'BlockInvalidWebSocketUpgrade'
+          priority: 12
+          enabledState: 'Enabled'
+          ruleType: 'MatchRule'
+          action: 'Block'
+          matchConditions: [
+            { matchVariable: 'RequestMethod', operator: 'Equal', matchValue: ['GET'] }
+            { matchVariable: 'RequestHeader', selector: 'Upgrade', operator: 'Equal', negateCondition: true, matchValue: ['websocket'], transforms: ['Lowercase'] }
+          ]
+        }
+        {
+          name: 'BlockInvalidWebSocketConnection'
+          priority: 13
+          enabledState: 'Enabled'
+          ruleType: 'MatchRule'
+          action: 'Block'
+          matchConditions: [
+            { matchVariable: 'RequestMethod', operator: 'Equal', matchValue: ['GET'] }
+            { matchVariable: 'RequestHeader', selector: 'Connection', operator: 'RegEx', negateCondition: true, matchValue: ['(^|[, \\t])upgrade([, \\t]|$)'], transforms: ['Lowercase'] }
+          ]
         }
         {
           name: 'RateLimitApi'

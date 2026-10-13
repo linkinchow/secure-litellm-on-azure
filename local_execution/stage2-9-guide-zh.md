@@ -6,6 +6,8 @@
 
 ## 当前运行状态（2026-10-09）
 
+**Native WSS部署/升级补充：** 新版本Stage4私有ingress和Stage9 API WAF默认支持两个Responses路径的合法WebSocket握手，保留原POST路径及FDID隔离，不需要升级LiteLLM 1.104.0。已有West US 3等native dev/test canary环境须按[WSS升级执行单](native-wss-upgrade-zh.md)重跑`stage4-private-ingress`、专用API WAF plan/execute和`stage9-edge-bind`，再刷新报告及做真实两轮/工具验收；不要重跑`edge-prepare`或DNS切换。当前运行状态段落中的Codex推理成功不等于WSS已验收。Entra代理不在本次协议扩展范围。
+
 当前greenfield native dev/test网关已在West US 3运行：Private AKS为`Running/Succeeded`，Azure RBAC与禁用本地账号、WI/OIDC均开启，Azure CNI Overlay，2个system加2个user节点，节点SKU `Standard_D4s_v4`。API/Admin通过Front Door Premium分别连接两条PLS和两个私有入口；这不是生产容量或其他区域可用性保证。
 
 用户已确认Admin `/fallback/login`原生用户名/密码登录及virtual key的Codex Responses推理。UI密码来自**后台Vault**中独立的`litellm-ui-password`，不是Master Key或证书Vault秘密；用户侧Entra SSO延期，native路径跳过Stage7。Admin WAF当前精确配置3个批准公网IPv4 `/32`及1个IPv6 `/128`。源镜像固定1.104.0，秘密/身份/续期、审计、恢复及各阶段实际检查仍是门禁，不据当前可用性声明完整Stage0–9或production签收。

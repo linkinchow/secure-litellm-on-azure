@@ -8,6 +8,12 @@
 
 Admin域不启用客户端证书认证，不创建Front Door Secret或边缘CA信任Vault，也不依赖Preview API。外层IP白名单不是用户身份认证：共享NAT后的所有用户都能通过该门禁，仍必须使用内层登录、强密码、限流和源站FDID绑定。公网出口不稳定时应先选择可控企业代理/VPN出口或其他身份感知边缘方案，而不是放宽CIDR。
 
+## Native Responses WebSocket
+
+native ingress保留六个POST推理路径，并仅对`/responses`和`/v1/responses`接受合法GET WebSocket Upgrade；两种协议都受同一Host、TLS和FDID门禁约束。Front Door原生支持WSS且route已禁用缓存，不需额外协议开关。API WAF以四条Block方法规则区分POST、合法Responses握手及其他GET，不用Allow短路managed rules/限流；Admin不变。LiteLLM固定1.104.0已含原生Responses WS和Azure上游路径，本次不更换后端镜像。
+
+首次部署按原Stage顺序自动取得该契约。已发布native dev/test canary按[WSS升级执行单](../../local_execution/native-wss-upgrade-zh.md)更新ingress、单资源API WAF及绑定/报告，**不要重跑禁流量edge-prepare**。WAF只检查握手、不检查后续帧，HTTP限流不是per-turn限流；真实两轮、工具回传、Key权限/预算及Spend Logs须独立验收。Entra代理不因本次变更自动支持WSS。
+
 ## 依赖顺序
 
 1. 在新Private AKS建设经过支持周期/安全评审的两个独立私有ingress controller，分别使用`llm-api-ingress`和`llm-admin-ingress` namespace；本模块不安装controller。

@@ -6,6 +6,9 @@ import sys
 from pathlib import Path
 
 import yaml
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from scripts.api_protocol import api_method_rules
 
 API_PATHS = {"/chat/completions", "/v1/chat/completions", "/responses", "/v1/responses", "/embeddings", "/v1/embeddings"}
 
@@ -74,8 +77,8 @@ def validate_templates(edge, origin):
         }
         assert not waf["managedRules"].get("exclusions")
         assert all(rule["action"] != "Allow" for rule in waf["customRules"]["rules"])
-    block_non_post = next(rule for rule in wafs["api"]["properties"]["customRules"]["rules"] if rule["name"] == "BlockNonPost")
-    assert block_non_post["matchConditions"] == [{"matchVariable": "RequestMethod", "operator": "Equal", "negateCondition": True, "matchValue": ["POST"]}]
+    api_rules = wafs["api"]["properties"]["customRules"]["rules"]
+    assert [rule for rule in api_rules if rule["name"] != "RateLimitApi"] == api_method_rules()
     admin_waf = wafs["admin"]["properties"]
     assert admin_waf["policySettings"]["mode"] == "Prevention"
     assert {rule["name"] for rule in admin_waf["customRules"]["rules"]} == {"BlockUnapprovedAdminSources", "BlockUnsafeMethods", "RateLimitAdmin"}

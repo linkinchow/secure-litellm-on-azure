@@ -4,6 +4,11 @@
 
 ## 验证目标
 
+当前native 1.104.0链路已接入精确Responses WSS入口契约及API WAF方法规则；
+现有West US 3需先按[WSS升级执行单](../local_execution/native-wss-upgrade-zh.md)更新ingress/WAF/绑定，
+并执行两轮和工具回传验收。本页下方1.95.0、ingress-nginx及公开`/v1/models`步骤仅是历史记录，
+不可用于当前Front Door/private native环境；本次也未扩展Entra代理协议。
+
 本文验证以下完整链路：
 
 ```text

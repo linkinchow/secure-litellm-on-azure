@@ -64,4 +64,29 @@ See the [Chinese test guide](README_ZH.md) for PowerShell usage and evidence bou
 
 ## Secure Gateway Acceptance
 
-The Entra proxy path accepts a restricted set of enterprise-authorized protocols; the native path accepts only exact inference POST routes, virtual keys, and username/password administration behind a separate Front Door source-IP allowlist. Legacy tests for Azure-style paths, image/video, WebSocket or encrypted multi-turn references must not be treated as proof of either secure gateway path, nor used to bypass policy. Phase one selects native Spend Logs: validate retained content, actor/Key correlation, access control, cleanup, capacity, backups and write failures. Custom L3 recovery/governance tests apply only to the optional Entra branch. Native runtime and stage gates are implemented, but real virtual-key denial tests, approved/disallowed Admin public egress tests, incorrect/correct UI-password tests, dual-plane Front Door header binding, and UI-password delivery still require customer-environment acceptance. Required protocols, private-origin DNS/identity, database migration and rollback remain mandatory; do not skip the current [customer stage gates](../docs/customer-migration-guide-zh.md).
+The Entra proxy path accepts a restricted set of enterprise-authorized protocols; the native path accepts exact inference POST routes and valid WebSocket GET upgrades on the two Responses paths, virtual keys, and username/password administration behind a separate Front Door source-IP allowlist. Legacy tests for Azure-style paths, image/video, WebSocket or encrypted multi-turn references must not be treated as proof of either secure gateway path, nor used to bypass policy. Phase one selects native Spend Logs: validate retained content, actor/Key correlation, access control, cleanup, capacity, backups and write failures. Custom L3 recovery/governance tests apply only to the optional Entra branch. Native runtime and stage gates are implemented, but real virtual-key denial tests, approved/disallowed Admin public egress tests, incorrect/correct UI-password tests, dual-plane Front Door header binding, and UI-password delivery still require customer-environment acceptance. Required protocols, private-origin DNS/identity, database migration and rollback remain mandatory; do not skip the current [customer stage gates](../docs/customer-migration-guide-zh.md).
+
+## Responses WebSocket verification
+
+See the [native WSS deployment and upgrade runbook](../local_execution/native-wss-upgrade-zh.md).
+The bounded probe prompts for a restricted v-key, checks missing/invalid-key handshake rejection,
+then completes two turns on one verified-TLS connection. `--tool-roundtrip` verifies a synthetic
+function call and its fixed local output; it performs no external tool action.
+There are no retries or concurrent requests. Two model generations may incur charges (up to 2048 output tokens per turn).
+Only sanitized event types and pass/fail observations are written to an exclusive 0600 report.
+
+```bash
+.venv/bin/python -m tests.responses_wss_probe \
+  --api-url "https://llm-api.<customer-domain>" --model "coding" \
+  --confirm-authorized-target --direct --tool-roundtrip \
+  --output-json "/tmp/responses-wss-$(date -u +%Y%m%dT%H%M%SZ).json"
+
+.venv/bin/python -m unittest tests.test_api_wss tests.test_responses_wss_probe
+RUN_PRIVATE_INGRESS_CONTAINER_TESTS=1 .venv/bin/python -m unittest tests.test_private_ingress_container
+```
+
+The Docker test uses the locked Traefik image and a synthetic backend with strict TLS,
+checks both exact Responses paths and two frames, and rejects unapproved paths/FDID.
+It does not prove Azure model support, virtual-key authorization or Spend Logs coverage.
+Front Door WAF inspects only the handshake; connection/frame quotas, budgets, model ACLs,
+revocation, auditing and actual coding clients require separate live acceptance.

@@ -1,6 +1,8 @@
 import json
 import copy
 import http.client
+import base64
+import hashlib
 import os
 import socket
 import ssl
@@ -20,6 +22,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 import yaml
+import websocket
 
 from scripts.customer_migration import ROOT, private_write
 from scripts.private_ingress import certificate_material, preserve_native_front_door_binding, render_ingress
@@ -114,7 +117,9 @@ class PrivateIngressContainerTests(unittest.TestCase):
             documents = preserve_native_front_door_binding(config, documents, current)
             objects = {document["kind"]: document for document in documents}
             backend_requests = []
+            websocket_frames = []
             class BackendHandler(BaseHTTPRequestHandler):
+                protocol_version = "HTTP/1.1"
                 def respond(self, status):
                     backend_requests.append((self.command, self.path, self.headers.get("Host"), self.headers.get("X-Forwarded-Proto"), self.headers.get("X-Forwarded-Host")))
                     body = f"{self.command} {self.path} host={self.headers.get('Host')}".encode("ascii")
@@ -125,6 +130,33 @@ class PrivateIngressContainerTests(unittest.TestCase):
                     self.wfile.write(body)
 
                 def do_GET(self):
+                    if self.headers.get("Upgrade", "").lower() == "websocket":
+                        accept = base64.b64encode(hashlib.sha1(
+                            (self.headers["Sec-WebSocket-Key"] + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()
+                        ).digest()).decode()
+                        self.send_response(101)
+                        self.send_header("Upgrade", "websocket")
+                        self.send_header("Connection", "Upgrade")
+                        self.send_header("Sec-WebSocket-Accept", accept)
+                        self.end_headers()
+                        self.connection.settimeout(5)
+                        for _ in range(2):
+                            header = self.rfile.read(2)
+                            if len(header) != 2 or header[0] != 0x81 or not header[1] & 0x80:
+                                return
+                            length = header[1] & 0x7f
+                            if length > 125:
+                                return
+                            mask = self.rfile.read(4)
+                            payload = self.rfile.read(length)
+                            if len(mask) != 4 or len(payload) != length:
+                                return
+                            message = bytes(value ^ mask[index % 4] for index, value in enumerate(payload))
+                            websocket_frames.append(message.decode())
+                            self.wfile.write(bytes((0x81, length)) + message)
+                            self.wfile.flush()
+                        self.close_connection = True
+                        return
                     self.respond(200)
 
                 def do_POST(self):
@@ -173,6 +205,37 @@ class PrivateIngressContainerTests(unittest.TestCase):
                 self.assertEqual(response("POST", "/key/generate", {"X-Azure-FDID": identifier})[0], 404)
                 self.assertEqual(response("GET", "/readyz"), (200, f"GET /health/readiness host={host}"))
                 self.assertEqual(backend_requests, [("POST", "/v1/chat/completions", host, "https", host), ("GET", "/health/readiness", host, "https", host)])
+                handshake = {"Upgrade": "websocket", "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+                             "Sec-WebSocket-Version": "13", "Connection": "Upgrade", "X-Azure-FDID": identifier}
+                # The normal HTTP helper adds Connection: close, so use it only for rejection cases.
+                for path, headers in (
+                    ("/v1/responses", {"X-Azure-FDID": identifier}),
+                    ("/responses", {"X-Azure-FDID": identifier}),
+                    ("/v1/chat/completions", handshake),
+                    ("/v1/models", handshake),
+                    ("/key/generate", handshake),
+                    ("/v1/responses", {**handshake, "X-Azure-FDID": "22222222-2222-4222-8222-222222222222"}),
+                    ("/v1/responses", {key: value for key, value in handshake.items() if key != "X-Azure-FDID"}),
+                    ("/v1/responses", {**handshake, "Upgrade": "not-websocket"}),
+                    ("/v1/responses", {**handshake, "Connection": "not-upgrade"}),
+                ):
+                    self.assertEqual(response("GET", path, headers)[0], 404, (path, headers))
+                for path in ("/responses", "/v1/responses"):
+                    with socket.create_connection(address, timeout=5) as connection:
+                        secured = context.wrap_socket(connection, server_hostname=host)
+                        client = websocket.create_connection(
+                            f"wss://{host}{path}", socket=secured, timeout=5,
+                            header={"X-Azure-FDID": identifier}, suppress_origin=True,
+                            connection="Connection: keep-alive,\tUpgrade",
+                        )
+                        try:
+                            self.assertEqual(client.getstatus(), 101)
+                            for turn in ("first-frame", "second-frame"):
+                                client.send(turn)
+                                self.assertEqual(client.recv(), turn)
+                        finally:
+                            client.close()
+                self.assertEqual(websocket_frames, ["first-frame", "second-frame"] * 2)
             finally:
                 self.docker("rm", "--force", container)
                 backend.shutdown()

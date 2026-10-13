@@ -15,11 +15,18 @@ from scripts.render_stage7_domain import domain_hosts
 
 
 NATIVE_API_PATHS = ("/chat/completions", "/v1/chat/completions", "/responses", "/v1/responses", "/embeddings", "/v1/embeddings")
+NATIVE_WSS_PATHS = ("/responses", "/v1/responses")
 
 
 def native_api_rule(host, front_door_id=None):
     path_rule = " || ".join(f"Path(`{path}`)" for path in NATIVE_API_PATHS)
-    rule = f"Host(`{host}`) && Method(`POST`) && ({path_rule})"
+    websocket_paths = " || ".join(f"Path(`{path}`)" for path in NATIVE_WSS_PATHS)
+    websocket = (
+        f"Method(`GET`) && ({websocket_paths})"
+        " && HeaderRegexp(`Upgrade`, `(?i)^websocket$`)"
+        " && HeaderRegexp(`Connection`, `(?i)(^|[, \\t])upgrade([, \\t]|$)`)"
+    )
+    rule = f"Host(`{host}`) && ((Method(`POST`) && ({path_rule})) || ({websocket}))"
     if front_door_id is not None:
         rule += f" && HeaderRegexp(`X-Azure-FDID`, `(?i)^{front_door_id}$`)"
     return rule

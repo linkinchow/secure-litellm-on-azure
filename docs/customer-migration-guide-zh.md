@@ -1583,7 +1583,7 @@ origin为API和Admin各创建一条Private Link Service并绑定不同内部LB f
 | 字段 | 来源与含义 |
 | --- | --- |
 | environmentName、baseDomain、logAnalyticsWorkspaceName、rateLimitPerMinute、adminRateLimitPerMinute | 与客户配置保持一致 |
-| phase、wafMode | prepare/Detection保持禁用；canary/Detection启流量；production/Prevention正式发布 |
+| phase、wafMode | prepare/Detection保持禁用；canary/Detection启流量；production/Prevention正式发布。native Responses WSS方法契约随首次Stage4/9部署接入；已发布dev/test升级及真实协议验收见[WSS执行单](../local_execution/native-wss-upgrade-zh.md)，不重跑禁流量prepare |
 | privateOrigin、adminPrivateOrigin | origin实际两条PLS ID和区域，不保留auto或REPLACE，且ID不得相同 |
 | adminAllowedCidrs | 与edge配置完全一致的批准公网出口CIDR数组；必须是实际客户端路径的全局可路由地址，不是内网地址 |
 | frontDoorId | edge输出中的profileId，是Front Door GUID，不是CDN profile的ARM Resource ID |

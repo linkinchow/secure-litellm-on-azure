@@ -16,6 +16,7 @@ READMES = (
     "docs/customer-private-runner-preparation-zh.md",
     "docs/litellm-content-audit-phase1-customer-brief-zh.md",
     "docs/litellm-ingress-tls-certificate-design-zh.md",
+    "docs/litellm-ingress-certificate-import-runbook-zh.md",
     "docs/litellm-bom-cost-comparison-zh.md",
     "docs/litellm-azure-security-hardening-zh.md",
     "docs/customer-migration-guide-zh.md",
@@ -414,6 +415,96 @@ class ProjectDocumentationTests(unittest.TestCase):
                     self.assertNotIn("private-value-sentinel", str(failure.exception))
                     self.assertEqual(output.getvalue(), "")
                 self.assertNotIn("private-value-sentinel", output.getvalue())
+
+    def test_customer_certificate_import_runbook_uses_two_file_backed_secrets(self):
+        import subprocess
+
+        name = "docs/litellm-ingress-certificate-import-runbook-zh.md"
+        runbook = (ROOT / name).read_text()
+        self.assertIn("!" + name, (ROOT / ".gitignore").read_text().splitlines())
+        for token in ("llm-api.<baseDomain>.pem", "llm-api.<baseDomain>.key",
+                      "llm-admin.<baseDomain>.pem", "llm-admin.<baseDomain>.key",
+                      "api-tls", "admin-tls", "Key Vault Secrets Officer",
+                      "Key Vault Secrets User", "certificateImporterPrincipalId",
+                      "privateIngress.api.tlsSecretId", "25KB", "7 天",
+                      "publicNetworkAccess=Disabled", "不是原子事务",
+                      "applied=true", "verified=true", "Stage4 plan",
+                      "PREVIOUS_AZURE_CONFIG_DIR", "不是四个 Secret"):
+            with self.subTest(token=token):
+                self.assertIn(token, runbook)
+        snippets = re.findall(r"```bash\n(.*?)\n```", runbook, re.S)
+        for source in snippets:
+            result = subprocess.run(["bash", "-n"], input=source, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        commands = "\n".join(snippets)
+        self.assertEqual(commands.count("az keyvault secret set"), 2)
+        self.assertEqual(commands.count("--query '{id:id,enabled:attributes.enabled}'"), 2)
+        self.assertIn("--name api-tls --file \"$API_PEM_FILE\" --encoding utf-8", commands)
+        self.assertIn("--name admin-tls --file \"$ADMIN_PEM_FILE\" --encoding utf-8", commands)
+        for forbidden in ("--value", "--debug", "az keyvault certificate import",
+                          "az role assignment create", "az keyvault update"):
+            self.assertNotIn(forbidden, commands)
+        for document in ("docs/customer-migration-guide-zh.md",
+                         "docs/litellm-ingress-tls-certificate-design-zh.md",
+                         "local_execution/stage2-9-guide-zh.md"):
+            with self.subTest(document=document):
+                self.assertIn(Path(name).name, (ROOT / document).read_text())
+
+    def test_customer_certificate_import_preflight_checks_chain_and_private_report_boundary(self):
+        import io
+        import subprocess
+        import tempfile
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        runbook = (ROOT / "docs/litellm-ingress-certificate-import-runbook-zh.md").read_text()
+        source = re.search(r"<<'PY'\n(.*?)\nPY", runbook, re.S).group(1)
+        material = {"certificate": "public-chain", "key": "private-sentinel",
+                    "sha256": "a" * 64, "expiresAt": "synthetic-expiry"}
+        cases = (
+            (b"x" * (25 * 1024), None, 0, None, True),
+            (b"x" * (25 * 1024 + 1), None, 0, None, False),
+            (b"invalid", ValueError("private-sentinel"), 0, None, False),
+            (b"encrypted-pem", TypeError("private-sentinel"), 0, None, False),
+            (b"synthetic-pem", None, 1, None, False),
+            (b"synthetic-pem", None, 0, subprocess.TimeoutExpired("private-sentinel", 30), False),
+        )
+        for raw, validation_error, returncode, verify_error, success in cases:
+            with self.subTest(size=len(raw), returncode=returncode, success=success), \
+                    tempfile.TemporaryDirectory() as directory, \
+                    patch("sys.argv", ["-", "customer.invalid", "api.pem", "admin.pem", directory]), \
+                    patch("pathlib.Path.read_bytes", return_value=raw), \
+                    patch("scripts.private_ingress.certificate_material", return_value=material,
+                          side_effect=validation_error) as validate, \
+                    patch("subprocess.run", return_value=SimpleNamespace(
+                        returncode=returncode, stdout="private-sentinel", stderr="private-sentinel"),
+                          side_effect=verify_error) as verify, \
+                    patch("sys.stdout", new_callable=io.StringIO) as output:
+                if success:
+                    exec(compile(source, "certificate-import-preflight", "exec"), {})
+                    rows = json.loads(output.getvalue())
+                    self.assertEqual([row["plane"] for row in rows], ["api", "admin"])
+                    self.assertTrue(all(row["publicChainVerified"] for row in rows))
+                    self.assertEqual(validate.call_count, 2)
+                    self.assertEqual([call.args[1] for call in validate.call_args_list],
+                                     ["llm-api.customer.invalid", "llm-admin.customer.invalid"])
+                    self.assertEqual(verify.call_count, 2)
+                    for call, plane in zip(verify.call_args_list, ("api", "admin"), strict=True):
+                        args = call.args[0]
+                        self.assertEqual(args[:3], ["openssl", "verify", "-CAfile"])
+                        self.assertEqual(args[4:8], ["-purpose", "sslserver", "-verify_hostname",
+                                                   f"llm-{plane}.customer.invalid"])
+                        self.assertEqual(args[8:], ["-untrusted",
+                                                   str(Path(directory) / f"{plane}-chain.pem"),
+                                                   str(Path(directory) / f"{plane}-chain.pem")])
+                        self.assertTrue(call.kwargs["capture_output"])
+                        self.assertEqual(call.kwargs["timeout"], 30)
+                else:
+                    with self.assertRaisesRegex(SystemExit, "no private material printed") as failure:
+                        exec(compile(source, "certificate-import-preflight", "exec"), {})
+                    self.assertNotIn("private-sentinel", str(failure.exception))
+                    self.assertEqual(output.getvalue(), "")
+                self.assertNotIn("private-sentinel", output.getvalue())
 
     def test_litellm_1104_runtime_upgrade_contract_is_aligned(self):
         from scripts.source_supply_chain import RUNTIME_CONTRACT, source_image

@@ -690,7 +690,7 @@ fi
 
 `Backend image`是完整不可变引用；`Stage6 digest value`输出的纯64位十六进制值才填写`REPLACE_BUILT_64_HEX_DIGEST`，不包含`sha256:`。镜像推送成功但扫描、签名或上述revision/environment核对失败时不得使用。
 
-8. 准备入口证书。手工导入按[Stage4证书导入步骤](../docs/customer-migration-guide-zh.md#4-c-部署后手动导入两个secret)上传`api-tls`和`admin-tls`。Stage9的Admin源站不得继续使用私网演练期间的自签名/企业CA证书，也不能靠给Runner或Laptop安装该CA放行；须先轮换为根位于Microsoft Trusted CA List中的公有链。入口计划使用独立`certifi`公有根包预检，不继承Runner本地附加CA。选择自动API证书时，先给当前客户账号或operator UAMI授予公共DNS zone的DNS Zone Contributor和证书Vault的Key Vault Secrets Officer，再执行：
+8. 准备入口证书。客户已提供API/Admin两套`.pem`和`.key`时，按[客户证书导入Runbook](../docs/litellm-ingress-certificate-import-runbook-zh.md)核对目标Vault、合并并上传两个Secret；网络窗口及无证书时的申请说明按[Stage4证书导入步骤](../docs/customer-migration-guide-zh.md#4-c-部署后手动导入两个secret)上传`api-tls`和`admin-tls`。Stage9的Admin源站不得继续使用私网演练期间的自签名/企业CA证书，也不能靠给Runner或Laptop安装该CA放行；须先轮换为根位于Microsoft Trusted CA List中的公有链。入口计划使用独立`certifi`公有根包预检，不继承Runner本地附加CA。选择自动API证书时，先给当前客户账号或operator UAMI授予公共DNS zone的DNS Zone Contributor和证书Vault的Key Vault Secrets Officer，再执行：
 
 ```bash
 .venv/bin/python -m local_execution \

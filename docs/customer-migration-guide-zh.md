@@ -1079,6 +1079,10 @@ DNS连接完成后，新运行Customer private runner checks：main、test、che
 
 #### 4-C. 部署后手动导入两个Secret
 
+客户已交付阿里云格式的 API/Admin `.pem` 和 `.key` 四个文件时，可按
+[客户证书导入 Runbook](litellm-ingress-certificate-import-runbook-zh.md) 执行文件合并、
+目标环境核对、人工身份上传及入口发布；以下保留完整网络窗口与无证书时的申请说明。
+
 **这里要上传的是两个Secret，不是两张新证书，也不是CA证书与服务器证书各上传一份。** 已有API证书和admin证书满足域名、信任及有效期要求时直接复用。`.crt`、`.pem`是文件名后缀，不能单凭后缀判断内容；本流程要求PEM格式。每个Secret的值都是一个完整材料包：该入口的证书链加对应叶私钥。
 
 | 已有文件的用途 | 如何使用 | Vault中的目标 |

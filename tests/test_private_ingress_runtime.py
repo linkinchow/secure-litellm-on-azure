@@ -1,14 +1,20 @@
 import json
 import copy
+import os
+import shutil
+import subprocess
 import tempfile
+import threading
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit
 import yaml
 
-from scripts.customer_migration import ROOT, MigrationError, stage_fingerprint
+from scripts.customer_migration import ROOT, MigrationError, private_write, stage_fingerprint
 from scripts.migration_deploy import group_id, resolve_origin
 from scripts.migration_runtime import validate_action
 from scripts.private_ingress_runtime import deploy_private_ingress, ingress_ownership_handoff, read_certificate, require_private_ingress_backends, require_private_registry_dns, scan_image, verify_private_ingress_backends
@@ -46,6 +52,7 @@ class PrivateIngressRuntimeTests(unittest.TestCase):
 
     def commands(self, arguments, directory, label, **kwargs):
         if label.startswith("before-"):
+            self.assertIn("--show-managed-fields", arguments)
             return ""
         if label.startswith("endpoint-slices-"):
             return json.dumps({"items": [{"metadata": {"name": "synthetic-endpoints"}, "addressType": "IPv4", "ports": [{"port": 8443}], "endpoints": [{"nodeName": "synthetic-node", "conditions": {"ready": True}}]}]})
@@ -124,6 +131,7 @@ class PrivateIngressRuntimeTests(unittest.TestCase):
         def commands(arguments, directory, label, **kwargs):
             for (plane, kind), current in resources.items():
                 if label == f"before-binding-{plane}-configmap" and kind == "ConfigMap" or label == f"before-{plane}-{kind}":
+                    self.assertIn("--show-managed-fields", arguments)
                     return json.dumps(current)
             return self.commands(arguments, directory, label, **kwargs)
 
@@ -178,6 +186,14 @@ class PrivateIngressRuntimeTests(unittest.TestCase):
         current["metadata"]["labels"] = {}
         with self.assertRaisesRegex(MigrationError, "workflow-managed"):
             ingress_ownership_handoff(document, current, True)
+
+    def test_missing_managed_fields_are_not_treated_as_no_legacy_owner(self):
+        document = {"kind": "ConfigMap", "metadata": {"labels": {}}}
+        for value in (None, [], "invalid"):
+            current = {"metadata": {"managedFields": value}}
+            with self.subTest(value=value), self.assertRaisesRegex(MigrationError, "--show-managed-fields"):
+                ingress_ownership_handoff(document, current, True)
+
 
     def test_unapproved_or_changed_certificate_never_deploys(self):
         result = self.plan()
@@ -289,6 +305,76 @@ class PrivateIngressRuntimeTests(unittest.TestCase):
         validate_action(self.config, 4, "private-ingress")
         with self.assertRaises(ValueError):
             validate_action(self.config, 3, "private-ingress")
+
+
+@unittest.skipUnless(shutil.which("kubectl"), "kubectl required for real client serialization regression")
+class KubectlOwnershipOutputTests(unittest.TestCase):
+    def test_real_kubectl_hides_owners_unless_explicitly_requested(self):
+        fixture = {
+            "apiVersion": "v1", "kind": "ConfigMap",
+            "metadata": {"name": "llm-api-ingress", "namespace": "llm-api-ingress",
+                         "uid": "synthetic-uid", "resourceVersion": "1",
+                         "labels": {"app.kubernetes.io/managed-by": "llmgw-workflow"},
+                         "managedFields": [{"manager": "kubectl-patch", "operation": "Update",
+                                            "apiVersion": "v1", "fieldsType": "FieldsV1",
+                                            "fieldsV1": {"f:data": {"f:routes.yaml": {}}}}]},
+            "data": {"routes.yaml": "synthetic-route"},
+        }
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                path = urlsplit(self.path).path
+                responses = {
+                    "/api": {"kind": "APIVersions", "apiVersion": "v1", "versions": ["v1"],
+                             "serverAddressByClientCIDRs": []},
+                    "/apis": {"kind": "APIGroupList", "apiVersion": "v1", "groups": []},
+                    "/api/v1": {"kind": "APIResourceList", "apiVersion": "v1", "groupVersion": "v1",
+                                "resources": [{"name": "configmaps", "singularName": "configmap",
+                                               "namespaced": True, "kind": "ConfigMap", "verbs": ["get"]}]},
+                    "/api/v1/namespaces/llm-api-ingress/configmaps/llm-api-ingress": fixture,
+                }
+                if path not in responses:
+                    self.send_error(404)
+                    return
+                body = json.dumps(responses[path]).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, _format, *_arguments):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            with tempfile.TemporaryDirectory() as name:
+                private_write(Path(name) / "unused-kubeconfig",
+                              yaml.safe_dump({"apiVersion": "v1", "kind": "Config",
+                                              "clusters": [], "contexts": [], "users": [], "current-context": ""}))
+                command = ["kubectl", "--server", f"http://127.0.0.1:{server.server_port}",
+                           "--kubeconfig", str(Path(name) / "unused-kubeconfig"),
+                           "--cache-dir", str(Path(name) / "cache"), "--request-timeout=5s",
+                           "--namespace", "llm-api-ingress", "get", "configmap", "llm-api-ingress", "-o", "json"]
+                def read(*options):
+                    result = subprocess.run([*command, *options], capture_output=True, text=True,
+                                            env={**os.environ, "NO_PROXY": "127.0.0.1,localhost"},
+                                            timeout=20, check=False)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    return json.loads(result.stdout)
+                hidden = read()
+                visible = read("--show-managed-fields")
+                self.assertNotIn("managedFields", hidden["metadata"])
+                self.assertEqual(visible["metadata"]["managedFields"], fixture["metadata"]["managedFields"])
+                self.assertTrue(ingress_ownership_handoff(fixture, visible, True))
+                with self.assertRaisesRegex(MigrationError, "ownership metadata is missing"):
+                    ingress_ownership_handoff(fixture, hidden, True)
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join(timeout=5)
 
 
 class CertificateReadTests(unittest.TestCase):

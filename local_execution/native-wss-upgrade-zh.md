@@ -72,6 +72,18 @@ read -r -p '本次实际批准人的 Entra 用户 Object ID: ' APPROVER_OBJECT_I
 安排维护窗口，不要承诺零中断。它不重跑 Stage4 platform 或 Stage6 应用/数据库部署。
 如出现证书、私有 DNS 或 LB 地址漂移，停止并处理实际问题，不能禁用证书校验。
 
+旧版`edge-bind`曾用JSON Patch替换完整ConfigMap data/Deployment spec，导致
+`kubectl-patch`持有字段。新版plan在`legacyOwnershipHandoffs`列出需要迁移的
+native ConfigMap/Deployment，只对带workflow管理标签、已知旧管理者的对象做
+受控server-side ownership交接。plan只做server dry-run；execute批准后才应用，
+payload含原UID/resourceVersion避免覆盖并发变更，管理字段结构也计入审批哈希。
+其他对象仍普通apply，未知相关字段管理者会阻止交接，不自动强制覆盖。
+如旧版plan报`conflict with "kubectl-patch"`，先更新修复版本后重新plan，
+不要自行给整组清单加`--force-conflicts`，也不要删除ConfigMap/Deployment。
+交接使用与其他私有入口变更相同的维护窗口；resourceVersion变化导致失败时
+核对现状后重新plan，不复用旧哈希。Stage4同时保留FDID/路由哈希注解并更新证书注解；
+新版`edge-bind`只patch路由键和两项绑定注解，不再接管整个spec/data。
+
 ### 2.2 只更新已有 API WAF 的方法规则
 
 ```bash

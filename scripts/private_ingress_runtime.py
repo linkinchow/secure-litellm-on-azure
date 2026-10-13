@@ -1,6 +1,7 @@
 """Plan, deploy and verify the managed private gateways on a private runner."""
 
 import base64
+import copy
 import hashlib
 import http.client
 import ipaddress
@@ -22,6 +23,28 @@ from scripts.migration_runtime import connect_cluster, run_command
 from scripts.private_ingress import certificate_material, ingress_image, ingress_settings, preserve_native_front_door_binding, render_ingress
 from scripts.render_stage7_domain import domain_hosts
 from scripts.workflow_diagnostics import command_failure_summary
+
+
+def ingress_ownership_handoff(document, current, native):
+    if not native or not current or document["kind"] not in {"ConfigMap", "Deployment"}:
+        return False
+    root = "f:data" if document["kind"] == "ConfigMap" else "f:spec"
+    managers = current["metadata"].get("managedFields", [])
+    legacy = any(entry.get("manager") == "kubectl-patch" and root in entry.get("fieldsV1", {})
+                 for entry in managers)
+    if not legacy:
+        return False
+    require(current["metadata"].get("labels", {}).get("app.kubernetes.io/managed-by") == "llmgw-workflow",
+            "Ownership handoff requires an existing workflow-managed ingress")
+    for entry in managers:
+        fields = entry.get("fieldsV1", {})
+        labels = fields.get("f:metadata", {}).get("f:labels", {})
+        touched = root in fields or any("f:" + key in labels for key in document["metadata"].get("labels", {}))
+        require(not touched or entry.get("manager") in {"llmgw-ingress", "kubectl-patch"},
+                "Ingress ownership handoff would override another manager; review its fields separately")
+    require(current["metadata"].get("uid") and current["metadata"].get("resourceVersion"),
+            "Ownership handoff requires live UID and resourceVersion")
+    return True
 
 
 def read_certificate(config, secret_id, host):
@@ -289,7 +312,7 @@ def deploy_private_ingress(config, operation, revision, directory, approved):
     subnet = azure.scoped(["network", "vnet", "subnet", "show", "--resource-group", config["target"]["resourceGroup"], "--vnet-name", network["virtualNetworkName"], "--name", network["ingressSubnetName"], "--query", "{prefix:addressPrefix,plsPolicy:privateLinkServiceNetworkPolicies}"])
     require(subnet.get("plsPolicy") == "Disabled", "Ingress subnet must permit Private Link Service before deployment")
     require(subnet["prefix"] == network["ingressSubnetPrefix"], "Deployed ingress subnet differs from configuration")
-    materials, manifests, live, observations = {}, {}, [], {}
+    materials, manifests, live, observations, handoffs = {}, {}, [], {}, {}
     for plane in ("api", "admin"):
         namespace = f"llm-{plane}-ingress"
         scoped = [*kube, "--namespace", namespace]
@@ -305,29 +328,46 @@ def deploy_private_ingress(config, operation, revision, directory, approved):
             preserved_config_map = json.loads(run_command([*scoped, "get", "ConfigMap", namespace, "--ignore-not-found", "-o", "json"], directory, f"before-binding-{plane}-configmap") or "null")
             documents = preserve_native_front_door_binding(config, documents, preserved_config_map)
         current_service = None
+        ordinary, handoffs[plane] = [], []
         for document in documents:
             if document["kind"] == "Deployment":
                 pod = document["spec"]["template"]
-                pod["metadata"]["annotations"] = {"llmgw/certificate-sha256": material["sha256"]}
+                pod["metadata"].setdefault("annotations", {})["llmgw/certificate-sha256"] = material["sha256"]
                 pod["spec"]["volumes"][1]["secret"]["secretName"] = namespace + "-tls-" + material["sha256"][:16]
             current = preserved_config_map if document["kind"] == "ConfigMap" and preserved_config_map is not None else json.loads(run_command([*scoped, "get", document["kind"], document["metadata"]["name"], "--ignore-not-found", "-o", "json"], directory, f"before-{plane}-{document['kind']}") or "null")
             if document["kind"] == "Service":
                 current_service = current
             if current:
                 require(current["metadata"].get("labels", {}).get("app.kubernetes.io/managed-by") == "llmgw-workflow", "Refusing to adopt an existing unmanaged ingress object")
-                live.append({"uid": current["metadata"]["uid"], "spec": current.get("spec"), "data": current.get("data"), "labels": current["metadata"].get("labels"), "annotations": current["metadata"].get("annotations")})
+                live.append({"uid": current["metadata"]["uid"], "spec": current.get("spec"), "data": current.get("data"), "labels": current["metadata"].get("labels"), "annotations": current["metadata"].get("annotations"),
+                             "managedFields": [{key: value for key, value in entry.items() if key != "time"}
+                                               for entry in current["metadata"].get("managedFields", [])]})
             else:
                 live.append(None)
+            if ingress_ownership_handoff(document, current, authentication_mode == "native"):
+                payload = copy.deepcopy(document)
+                payload["metadata"].update(uid=current["metadata"]["uid"], resourceVersion=current["metadata"]["resourceVersion"])
+                handoff_path = directory / f"ownership-{plane}-{document['kind']}.yaml"
+                private_write(handoff_path, yaml.safe_dump(payload, sort_keys=False))
+                handoffs[plane].append(handoff_path)
+                run_command([*scoped, "apply", "--server-side", "--field-manager=llmgw-ingress",
+                             "--force-conflicts", "--dry-run=server", "-f", str(handoff_path)],
+                            directory, f"dry-run-ownership-{plane}-{document['kind']}")
+            else:
+                ordinary.append(document)
         manifests[plane] = documents
         path = directory / f"ingress-{plane}.yaml"
-        private_write(path, yaml.safe_dump_all(documents, sort_keys=False))
+        private_write(path, yaml.safe_dump_all(ordinary, sort_keys=False))
         run_command([*scoped, "apply", "--server-side", "--field-manager=llmgw-ingress", "--dry-run=server", "-f", str(path)], directory, "dry-run-" + plane)
         observations[plane] = ingress_observation(scoped, namespace, current_service, directory)
     public_certificates = {plane: {key: material[key] for key in ("sha256", "expiresAt", "secretId")} for plane, material in materials.items()}
-    plan = {"stage": 4, "action": "private-ingress", "revision": revision, "configSha256": stage_fingerprint(config, 4), "cluster": cluster, "subnet": subnet, "documents": manifests, "certificates": public_certificates, "before": live}
+    ownership_handoffs = {plane: [path.name for path in paths] for plane, paths in handoffs.items()}
+    plan = {"stage": 4, "action": "private-ingress", "revision": revision, "configSha256": stage_fingerprint(config, 4), "cluster": cluster, "subnet": subnet, "documents": manifests, "certificates": public_certificates, "before": live,
+            "legacyOwnershipHandoffs": ownership_handoffs}
     plan_hash = fingerprint(plan)
     public_observations = {plane: {"serviceExists": observation["serviceExists"], "loadBalancerIngressCount": observation["loadBalancerIngressCount"], "readyEndpointCount": observation["readyEndpointCount"], "eventReasons": sorted({event["reason"] for event in observation["events"] if isinstance(event.get("reason"), str)})} for plane, observation in observations.items()}
-    summary = {"stage": 4, "action": "private-ingress", "planSha256": plan_hash, "stageAccepted": False, "ingressObservation": public_observations}
+    summary = {"stage": 4, "action": "private-ingress", "planSha256": plan_hash, "stageAccepted": False, "ingressObservation": public_observations,
+               "legacyOwnershipHandoffs": ownership_handoffs}
     private_write(directory / "runtime-summary.json", json.dumps(summary, indent=2) + "\n")
     private_write(directory / "runtime-review.json", json.dumps({"planSha256": plan_hash, **plan, "currentIngressObservationNotPlanBound": observations}, indent=2) + "\n")
     print(json.dumps(summary))
@@ -347,6 +387,10 @@ def deploy_private_ingress(config, operation, revision, directory, approved):
             run_command([*scoped, "apply", "--server-side", "--field-manager=llmgw-ingress", "-f", str(secret_path), "-o", "name"], directory, "tls-apply-" + plane)
         finally:
             secret_path.unlink(missing_ok=True)
+        for handoff_path in handoffs[plane]:
+            run_command([*scoped, "apply", "--server-side", "--field-manager=llmgw-ingress",
+                         "--force-conflicts", "-f", str(handoff_path)],
+                        directory, "ownership-apply-" + handoff_path.stem)
         run_command([*scoped, "apply", "--server-side", "--field-manager=llmgw-ingress", "-f", str(directory / f"ingress-{plane}.yaml")], directory, "apply-" + plane)
         run_command([*scoped, "rollout", "status", "deployment/" + namespace, "--timeout=15m"], directory, "ready-" + plane)
         run_command([*scoped, "wait", "--for=jsonpath={.status.loadBalancer.ingress[0].ip}", "service/" + namespace, "--timeout=10m"], directory, "lb-ready-" + plane)

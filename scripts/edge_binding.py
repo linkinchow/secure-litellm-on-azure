@@ -340,9 +340,17 @@ def bind_edge(config, operation, revision, directory, approved, azure=None, clie
             observed_deployment = client[plane].get("deployment", name)
             require(observed_config_map["metadata"]["uid"] == plane_plan["configMapUid"] and observed_config_map["data"] == change["currentConfigMap"]["data"] and observed_deployment["metadata"]["uid"] == plane_plan["deploymentUid"] and observed_deployment["spec"] == change["currentDeployment"]["spec"], f"Native {plane} ingress changed during approval")
             if observed_config_map["data"] != change["desiredConfigMap"]["data"]:
-                client[plane].patch("configmap", name, [{"op": "test", "path": "/metadata/uid", "value": plane_plan["configMapUid"]}, {"op": "test", "path": "/data", "value": observed_config_map["data"]}, {"op": "replace", "path": "/data", "value": change["desiredConfigMap"]["data"]}])
+                client[plane].patch("configmap", name, [{"op": "test", "path": "/metadata/uid", "value": plane_plan["configMapUid"]}, {"op": "test", "path": "/data", "value": observed_config_map["data"]}, {"op": "replace", "path": "/data/routes.yaml", "value": change["desiredConfigMap"]["data"]["routes.yaml"]}])
             if observed_deployment["spec"] != change["desiredDeployment"]["spec"]:
-                client[plane].patch("deployment", name, [{"op": "test", "path": "/metadata/uid", "value": plane_plan["deploymentUid"]}, {"op": "test", "path": "/spec", "value": observed_deployment["spec"]}, {"op": "replace", "path": "/spec", "value": change["desiredDeployment"]["spec"]}])
+                operations = [{"op": "test", "path": "/metadata/uid", "value": plane_plan["deploymentUid"]},
+                              {"op": "test", "path": "/spec", "value": observed_deployment["spec"]}]
+                if "annotations" not in observed_deployment["spec"]["template"]["metadata"]:
+                    operations.append({"op": "add", "path": "/spec/template/metadata/annotations", "value": {}})
+                annotations = change["desiredDeployment"]["spec"]["template"]["metadata"]["annotations"]
+                for key in ("llmgw/front-door-id", "llmgw/routes-sha256"):
+                    operations.append({"op": "add", "path": "/spec/template/metadata/annotations/" + key.replace("/", "~1"),
+                                       "value": annotations[key]})
+                client[plane].patch("deployment", name, operations)
             client[plane].run(["rollout", "status", f"deployment/{name}", "--timeout=15m"])
         after = {plane: native_ingress_state(config, client[plane], edge["frontDoorId"], plane) for plane in ("api", "admin")}
         for plane, state in after.items():

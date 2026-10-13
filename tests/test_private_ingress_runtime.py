@@ -1,15 +1,18 @@
 import json
+import copy
 import tempfile
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+import yaml
 
 from scripts.customer_migration import ROOT, MigrationError, stage_fingerprint
 from scripts.migration_deploy import group_id, resolve_origin
 from scripts.migration_runtime import validate_action
-from scripts.private_ingress_runtime import deploy_private_ingress, read_certificate, require_private_ingress_backends, require_private_registry_dns, scan_image, verify_private_ingress_backends
+from scripts.private_ingress_runtime import deploy_private_ingress, ingress_ownership_handoff, read_certificate, require_private_ingress_backends, require_private_registry_dns, scan_image, verify_private_ingress_backends
+from scripts.private_ingress import ingress_image, native_api_rule, native_admin_rule, render_ingress
 from tests.test_customer_migration import customer_config
 
 
@@ -92,6 +95,89 @@ class PrivateIngressRuntimeTests(unittest.TestCase):
         second = self.plan()
         self.assertEqual(first["planSha256"], second["planSha256"])
         self.assertNotEqual(first["ingressObservation"], second["ingressObservation"])
+
+    def test_bound_native_ingress_migrates_only_known_legacy_owners(self):
+        self.config["application"] = {"authentication": {"mode": "native", "adminUsername": "gateway-admin"}}
+        fdid = "11111111-1111-4111-8111-111111111111"
+        resources = {}
+        for plane in ("api", "admin"):
+            documents = render_ingress(self.config, plane, ingress_image(self.config)[0], ["10.30.0.0/16"])
+            for document in documents:
+                if document["kind"] not in {"ConfigMap", "Deployment"}:
+                    continue
+                current = copy.deepcopy(document)
+                root = "f:data" if current["kind"] == "ConfigMap" else "f:spec"
+                current["metadata"].update(uid=plane + current["kind"], resourceVersion="1",
+                                           managedFields=[{"manager": "kubectl-patch", "operation": "Update",
+                                                           "fieldsV1": {root: {}}, "time": "first"}])
+                if current["kind"] == "ConfigMap":
+                    routes = yaml.safe_load(current["data"]["routes.yaml"])
+                    renderer = native_api_rule if plane == "api" else native_admin_rule
+                    routes["http"]["routers"][plane]["rule"] = renderer("llm-" + plane + "." + self.config["baseDomain"], fdid)
+                    current["data"]["routes.yaml"] = yaml.safe_dump(routes, sort_keys=False)
+                else:
+                    current["spec"]["template"]["metadata"]["annotations"] = {
+                        "llmgw/front-door-id": fdid, "llmgw/routes-sha256": "old",
+                    }
+                resources[(plane, current["kind"])] = current
+
+        def commands(arguments, directory, label, **kwargs):
+            for (plane, kind), current in resources.items():
+                if label == f"before-binding-{plane}-configmap" and kind == "ConfigMap" or label == f"before-{plane}-{kind}":
+                    return json.dumps(current)
+            return self.commands(arguments, directory, label, **kwargs)
+
+        self.command.side_effect = commands
+        first = self.plan()
+        for current in resources.values():
+            current["metadata"]["resourceVersion"] = "2"
+            current["metadata"]["managedFields"][0]["time"] = "second"
+        second = self.plan()
+        self.assertEqual(first["planSha256"], second["planSha256"])
+        review = json.loads((self.path / "runtime-review.json").read_text())
+        for plane in ("api", "admin"):
+            self.assertEqual(len(first["legacyOwnershipHandoffs"][plane]), 2)
+            ordinary = list(yaml.safe_load_all((self.path / f"ingress-{plane}.yaml").read_text()))
+            self.assertFalse(any(item["kind"] in {"ConfigMap", "Deployment"} for item in ordinary))
+            deployment = next(item for item in review["documents"][plane] if item["kind"] == "Deployment")
+            annotations = deployment["spec"]["template"]["metadata"]["annotations"]
+            self.assertEqual(annotations["llmgw/front-door-id"], fdid)
+            self.assertEqual(annotations["llmgw/certificate-sha256"], ("a" if plane == "api" else "b") * 64)
+            self.assertNotEqual(annotations["llmgw/routes-sha256"], "old")
+        forced = [call.args[0] for call in self.command.call_args_list if "--force-conflicts" in call.args[0]]
+        self.assertTrue(forced)
+        self.assertTrue(all("--dry-run=server" in command for command in forced))
+        self.promote.assert_not_called()
+        self.command.reset_mock()
+        with self.assertRaisesRegex(MigrationError, "not approved"):
+            deploy_private_ingress(self.config, "execute", "a" * 40, self.path, "f" * 64)
+        self.assertFalse(any("--force-conflicts" in call.args[0] and "--dry-run=server" not in call.args[0]
+                             for call in self.command.call_args_list))
+        self.promote.assert_not_called()
+        self.command.reset_mock()
+        deploy_private_ingress(self.config, "execute", "a" * 40, self.path, first["planSha256"])
+        forced = [call.args[0] for call in self.command.call_args_list if "--force-conflicts" in call.args[0] and "--dry-run=server" not in call.args[0]]
+        self.assertEqual(len(forced), 4)
+        for command in forced:
+            payload = yaml.safe_load(Path(command[command.index("-f") + 1]).read_text())
+            self.assertIn(payload["kind"], {"ConfigMap", "Deployment"})
+            self.assertEqual(payload["metadata"]["resourceVersion"], "2")
+            self.assertTrue(payload["metadata"]["uid"])
+
+    def test_unknown_owner_blocks_handoff_before_any_force(self):
+        document = {"kind": "Deployment", "metadata": {"labels": {"app.kubernetes.io/managed-by": "llmgw-workflow"}}}
+        current = {"metadata": {"uid": "synthetic", "resourceVersion": "1",
+                               "labels": {"app.kubernetes.io/managed-by": "llmgw-workflow"},
+                               "managedFields": [{"manager": "kubectl-patch", "fieldsV1": {"f:spec": {}}},
+                                                 {"manager": "external-operator", "fieldsV1": {"f:spec": {}}}]}}
+        with self.assertRaisesRegex(MigrationError, "another manager"):
+            ingress_ownership_handoff(document, current, True)
+        self.assertFalse(ingress_ownership_handoff(document, current, False))
+        current["metadata"]["managedFields"].pop()
+        self.assertTrue(ingress_ownership_handoff(document, current, True))
+        current["metadata"]["labels"] = {}
+        with self.assertRaisesRegex(MigrationError, "workflow-managed"):
+            ingress_ownership_handoff(document, current, True)
 
     def test_unapproved_or_changed_certificate_never_deploys(self):
         result = self.plan()

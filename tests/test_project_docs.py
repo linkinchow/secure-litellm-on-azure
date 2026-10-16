@@ -9,6 +9,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 READMES = (
+    "l3-audit/README.md",
     "README.md", "README_ZH.md", "LiteLLM/README.md", "LiteLLM/README_ZH.md",
     "tests/README.md", "tests/README_ZH.md", "infra/README_ZH.md",
     "deploy/README_ZH.md", "auth-proxy/README_ZH.md", ".github/README_ZH.md",

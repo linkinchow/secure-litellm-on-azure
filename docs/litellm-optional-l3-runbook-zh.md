@@ -275,14 +275,41 @@ jq '{deploymentSettings,workspaceId,privateEndpoints,alertActionGroupId}' "$L3_D
 推送；下面是构建/推送命令，不替代上述门禁。镜像构建使用已锁定Node基础digest和npm lockfile。
 
 ```bash
+set -euo pipefail
 L3_TAG="l3-audit:$(git rev-parse --short=12 HEAD)"
 docker build --platform linux/amd64 -f l3-audit/Dockerfile -t "${ACR_NAME}.azurecr.io/${L3_TAG}" l3-audit
-# 完成客户批准的扫描、SBOM、签名与ACR登录后再推送。
-docker push "${ACR_NAME}.azurecr.io/${L3_TAG}"
-L3_DIGEST="$(az acr repository show --subscription "$SUBSCRIPTION_ID" \
-  --name "$ACR_NAME" --image "$L3_TAG" --query digest -o tsv)"
-L3_IMAGE="${ACR_NAME}.azurecr.io/l3-audit@${L3_DIGEST}"
 ```
+
+完成客户批准的扫描、SBOM及签名流程后，使用已有获批ACR推送身份，在同一用户、
+同一Docker配置环境下显式登录ACR。**Azure CLI已登录不代表Docker已登录ACR**，
+旧Docker凭据也可能过期；不用`sudo docker push`切到另一个凭据目录。
+下面的`&&`确保登录或推送失败后不查询digest；先清空旧引用，防止错误沿用：
+
+```bash
+unset L3_DIGEST L3_IMAGE
+az acr login --subscription "$SUBSCRIPTION_ID" --name "$ACR_NAME" --only-show-errors &&
+docker push "${ACR_NAME}.azurecr.io/${L3_TAG}" &&
+L3_DIGEST="$(az acr repository show --subscription "$SUBSCRIPTION_ID" \
+  --name "$ACR_NAME" --image "$L3_TAG" --query digest -o tsv --only-show-errors)" &&
+if [[ "$L3_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  L3_IMAGE="${ACR_NAME}.azurecr.io/l3-audit@${L3_DIGEST}"
+  printf 'Approved image reference candidate: %s\n' "$L3_IMAGE"
+else
+  unset L3_DIGEST L3_IMAGE
+  printf 'Invalid or empty ACR digest; stop before workload rendering.\n' >&2
+  exit 1
+fi
+```
+
+若build已成功、push报`authentication required`，不必重新构建；完成上述登录后重试原tag。
+若push失败，紧接着出现`specified tag does not exist`只是尚未上传该tag的连带结果，
+不能将其解释为构建失败，也不能继续用空`L3_IMAGE`发布。
+
+登录成功但push仍被拒绝时，核对当前Azure身份、ACR作用域的数据面推送权限及传播：
+传统`LegacyRegistryPermissions`模式需要`AcrPush`或等效受限角色；
+ABAC仓库权限模式需相应的Repository Writer/Reader及条件，不能机械套用`AcrPush`。
+仍须保持ACR公网Disabled、admin账号Disabled；网络失败按实际PE/DNS/路由排查，
+不要打开公网、启用admin密码或打印/复制访问Token来绕过问题。
 
 建立独立kubeconfig，不覆盖默认context，不使用`--admin`：
 

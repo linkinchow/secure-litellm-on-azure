@@ -574,6 +574,66 @@ node l3-audit/dist/src/admin.js get \
 即使`outcome=completed`也不能认定审计完整。读取会核对存储版本ETag、封装哈希和内容哈希。
 已存在的输出文件不会被覆盖。不要将文件放到Git、公共工单、聊天或普通日志。
 
+### 6.1 下载后查看实际 Prompt 和响应
+
+`get`返回的`{"saved":true,...}`只是下载成功摘要，**不是原文预览**。
+原文在`$L3_DIR/private-call.json`，`parts[].data`是base64编码，不是加密。
+以下命令只读取已下载的本地文件，不调用模型或再次下载Blob。
+**命令会把真实内容打印到终端**：仅在批准的受控终端查看，关闭共享屏幕/录屏，
+确认终端日志不会将正文送往普通日志平台；不要把输出粘贴到聊天或公共工单。
+
+先确认记录的协议和完整性标记：
+
+```bash
+jq '{id:.index.id,transport:.index.transport,outcome:.index.outcome,
+     gap:.index.gap,bodyEncoding}' "$L3_DIR/private-call.json"
+```
+
+**WSS记录**的每个part对应一条消息。查看客户端发送的`response.create`原文：
+
+```bash
+jq -r '.parts[] | select(.direction == "request") | .data | @base64d' "$L3_DIR/private-call.json"
+```
+
+Prompt通常在`input`，系统指令可能在`instructions`，还可能包含工具定义和工具回传。
+只想查看这些字段时：
+
+```bash
+jq -r '.parts[] | select(.direction == "request") | .data | @base64d' "$L3_DIR/private-call.json" |
+jq '{type,model,input,instructions,tools,tool_choice,previous_response_id}'
+```
+
+查看模型返回的全部WSS事件（包含增量事件，输出可能较长）：
+
+```bash
+jq -r '.parts[] | select(.direction == "response") | .data | @base64d' "$L3_DIR/private-call.json"
+```
+
+只查看最终完成响应，避免重复显示增量内容：
+
+```bash
+jq -r '.parts[] | select(.direction == "response") | .data | @base64d' "$L3_DIR/private-call.json" |
+jq 'select(.type == "response.completed") | .response'
+```
+
+没有`response.completed`时该命令可能无输出，须结合`outcome`、`gap`及失败/未完成事件判断，
+不能将空输出当作“没有响应”。只有`previous_response_id`的续轮不会自动展开历史Prompt；
+本文件仅保留本轮经过网关的请求/响应，历史关联不等于历史原文永久存在。
+
+**HTTP记录**的part可能是任意字节分块，不要将每个part分别当成JSON或独立UTF-8文本。
+对于`bodyEncoding`为`identity`的方向，先拼接字节再解码；以下以请求为例，
+查看响应时将最后一个参数`request`改成`response`：
+
+```bash
+node --input-type=module -e 'import{readFile}from"node:fs/promises";const [file,direction]=process.argv.slice(1);if(!["request","response"].includes(direction))throw Error("Invalid direction");const r=JSON.parse(await readFile(file,"utf8"));if(r.index.transport!=="http"||(r.bodyEncoding?.[direction]??"identity")!=="identity")throw Error("Requires identity-encoded HTTP body");const chunks=r.parts.filter(p=>p.direction===direction).map(p=>Buffer.from(p.data,"base64"));process.stdout.write(Buffer.concat(chunks).toString("utf8"));' "$L3_DIR/private-call.json" request
+```
+
+SSE响应拼接后仍是`data:`事件流，不是单个JSON。压缩body须按`bodyEncoding`在批准的
+本地工具中解压再查看；不要把压缩字节当作空正文。Embeddings记录按设计不含响应向量。
+以上base64解码命令用于文本消息，不是二进制附件导出工具。
+
+### 6.2 案件保全与解除
+
 按调用ID保全：从LAW先取得Blob引用，选择一个案件ID（小写字母开头，仅字母数字，3–31位）。
 本期每个案件一个独立容器，避免解除一个案件的hold影响其他案件。
 

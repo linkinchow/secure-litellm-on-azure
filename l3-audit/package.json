@@ -14,7 +14,7 @@
     "@azure/identity": "4.13.2",
     "@azure/storage-blob": "12.33.0",
     "eventsource-parser": "4.1.0",
-    "yaml": "2.8.2"
+    "yaml": "2.8.3"
   },
   "devDependencies": {
     "@types/node": "24.10.1",

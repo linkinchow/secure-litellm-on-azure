@@ -9,7 +9,9 @@ param aksOidcIssuer string
 param administratorPrincipalId string
 @allowed(['User', 'Group'])
 param administratorPrincipalType string = 'Group'
-param alertActionGroupId string
+@minLength(3)
+@description('Customer notification email resolved from CFG ownerEmail, or an approved signed-in user mail.')
+param alertEmail string
 @description('Use the existing scope already linked to this VNet; empty creates a new scope.')
 param existingMonitorScopeName string = ''
 @description('Only the reviewed missing zone names; never adopt another RG zone without approval.')
@@ -19,6 +21,19 @@ param privateDnsZonesToLink array = []
 param workspaceAlreadyLinkedToMonitorScope bool = false
 
 var prefix = 'l3-${storageAccountName}'
+resource actionGroup 'Microsoft.Insights/actionGroups@2023-01-01' = {
+  name: '${prefix}-alerts'
+  location: 'global'
+  properties: {
+    groupShortName: 'L3Audit'
+    enabled: true
+    emailReceivers: [{
+      name: 'l3-owner'
+      emailAddress: alertEmail
+      useCommonAlertSchema: true
+    }]
+  }
+}
 var monitorScopeName = empty(existingMonitorScopeName) ? '${prefix}-monitor' : existingMonitorScopeName
 var zoneNames = [
   'privatelink.blob.${environment().suffixes.storage}'
@@ -294,7 +309,7 @@ resource alerts 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = [for item 
         failingPeriods: { numberOfEvaluationPeriods: 1, minFailingPeriodsToAlert: 1 }
       }]
     }
-    actions: { actionGroups: [alertActionGroupId] }
+    actions: { actionGroups: [actionGroup.id] }
   }
   dependsOn: [table]
 }]
@@ -307,3 +322,4 @@ output deploymentSettings object = {
 }
 output workspaceId string = workspace.properties.customerId
 output privateEndpoints array = [blobPe.id, monitorPe.id]
+output alertActionGroupId string = actionGroup.id

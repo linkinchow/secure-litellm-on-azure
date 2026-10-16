@@ -1,9 +1,14 @@
 import copy
+import json
+from pathlib import Path
+import re
+import subprocess
+import tempfile
 import unittest
 
 import yaml
 
-from scripts.customer_migration import stage_fingerprint, validate_config
+from scripts.customer_migration import ROOT, stage_fingerprint, validate_config
 from scripts.native_audit import render_native_audit
 from scripts.optional_l3 import enabled, upstream
 from scripts.private_ingress import render_ingress, preserve_native_front_door_binding
@@ -13,6 +18,69 @@ from tests.test_customer_migration import customer_config
 
 
 class OptionalL3Tests(unittest.TestCase):
+    def test_action_group_is_created_and_alerts_reference_it(self):
+        template = (ROOT / "infra/optional-l3/main.bicep").read_text()
+        self.assertIn("resource actionGroup 'Microsoft.Insights/actionGroups@2023-01-01'", template)
+        self.assertIn("emailAddress: alertEmail", template)
+        self.assertIn("useCommonAlertSchema: true", template)
+        self.assertIn("actions: { actionGroups: [actionGroup.id] }", template)
+        self.assertIn("output alertActionGroupId string = actionGroup.id", template)
+        self.assertNotIn("param alertActionGroupId", template)
+        self.assertNotIn("wangpeter@", template)
+
+    def test_documented_email_resolution_uses_customer_config_and_user_mail_only(self):
+        runbook = (ROOT / "docs/litellm-optional-l3-runbook-zh.md").read_text()
+        source = next(snippet for snippet in re.findall(r"```bash\n(.*?)\n```", runbook, re.S)
+                      if snippet.startswith('ALERT_EMAIL="$(jq'))
+        cases = (
+            ("customer-owner@example.com", "servicePrincipal", "", 1, True, False),
+            ("", "user", "signed-in-customer@example.com", 0, True, True),
+            ("", "servicePrincipal", "", 0, False, False),
+            ("", "user", "", 1, False, True),
+            ("", "user", "", 0, False, True),
+            ("invalid-email", "user", "signed-in-customer@example.com", 0, False, False),
+        )
+        for email, login_type, user_mail, graph_exit, success, graph_called in cases:
+            with self.subTest(email=email, login=login_type, success=success), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory)
+                cfg = {"ownerEmail": email, "location": "synthetic-region",
+                       "parameters": {"platform": {"logAnalyticsWorkspaceName": "customer-law",
+                           "stage4Network": {"virtualNetworkName": "customer-vnet",
+                               "privateEndpointSubnetName": "customer-pe"}}}}
+                (path / "customer.json").write_text(json.dumps(cfg))
+                (path / "infra.parameters.json").write_text('{"parameters":{}}')
+                harness = '''
+set -euo pipefail
+umask 077
+L3_DIR="$1"
+CFG="$L3_DIR/customer.json"
+AKS_FACTS='{"issuer":"https://synthetic-issuer/"}'
+az() {
+  if [[ "$1" == "account" ]]; then
+    printf '%s\\n' "$LOGIN_TYPE_TEST"
+  else
+    printf 'graph-called\\n' >> "$L3_DIR/graph.log"
+    printf '%s\\n' "$USER_MAIL_TEST"
+    return "$GRAPH_EXIT_TEST"
+  fi
+}
+'''
+                import os
+                result = subprocess.run(["bash", "-c", harness + source, "test", directory],
+                    env={**os.environ, "LOGIN_TYPE_TEST": login_type, "USER_MAIL_TEST": user_mail,
+                         "GRAPH_EXIT_TEST": str(graph_exit)},
+                    capture_output=True, text=True, timeout=15)
+                self.assertEqual(result.returncode == 0, success, result.stderr)
+                self.assertEqual((path / "graph.log").exists(), graph_called)
+                updated = json.loads((path / "infra.parameters.json").read_text())
+                if success:
+                    self.assertEqual(updated["parameters"]["alertEmail"]["value"], email or user_mail)
+                    self.assertEqual(updated["parameters"]["virtualNetworkName"]["value"], "customer-vnet")
+                    self.assertEqual(updated["parameters"]["aksOidcIssuer"]["value"], "https://synthetic-issuer/")
+                    self.assertEqual((path / "infra.parameters.json").stat().st_mode & 0o777, 0o600)
+                else:
+                    self.assertEqual(updated, {"parameters": {}})
+
     def setUp(self):
         self.config = customer_config()
         self.config["application"] = {

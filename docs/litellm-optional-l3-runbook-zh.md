@@ -96,8 +96,16 @@ L3_DIR="$(mktemp -d "$PWD/temp/optional-l3.XXXXXXXX")"
 cp "$CFG" "$L3_DIR/customer-before.json"
 chmod 600 "$L3_DIR/customer-before.json"
 npm ci --prefix l3-audit --ignore-scripts --no-fund
-make validate-optional-l3
+npm test --prefix l3-audit
+.venv/bin/python -m unittest \
+  tests.test_optional_l3 tests.test_private_ingress \
+  tests.test_backend_manifest tests.test_local_release_report
+az bicep build --file infra/optional-l3/main.bicep --stdout >/dev/null
 ```
+
+以上三条验证命令等价于`make validate-optional-l3`，不要求Runner安装make；
+已有make时可以使用该快捷目标。验证失败时停止，不继续创建资源或切换入口。
+依赖安装提示漏洞时核对具体公告和锁定版本，不运行`npm audit fix --force`擅自批量升级。
 
 这里只备份本次客户配置，不备份或输出任何数据库/运行Secret。
 选择已有L3与本方案迁移时停止，先审核已有存储、正文所有权及回退，不混用两套采集。
@@ -448,7 +456,8 @@ node l3-audit/dist/src/activation.js execute "$CFG" "$KCFG" "$EXPECTED_SERVER" \
 
 新采集、透明转发、缓冲、Azure交付、CLI及激活工具均为TypeScript；
 现有Python仅增加可选配置校验、路由渲染、PG原生发布策略和绑定门禁的桥接，不复制采集逻辑。
-离线执行`make validate-optional-l3`；CI有独立Node任务。
+离线执行第2节的npm、Python及Bicep三条验证命令；已有make时也可执行
+`make validate-optional-l3`；CI有独立Node任务。
 合成协议测试没有真实模型费用，也不证明客户云端IAM/网络/保全策略已验收。
 
 本期不包括：独立审批读者UI、原文内容DLP、模型摘要、跨区域灾备、Exactly-once、

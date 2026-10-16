@@ -380,6 +380,44 @@ kubectl --kubeconfig "$KCFG" -n litellm get pods,pvc -l app.kubernetes.io/name=l
 这是新增顶层字段，**保留原 `contentAudit` 配置作为基础版回退策略**，不要把整个CFG替换成这个片段。
 不得同时加入旧 `auditRuntime/auditGovernance`。本期不存在隐式自动启用。
 
+在Runner同一个终端运行下面的合并命令，不需要手工编辑完整JSON。
+先确认输出的CFG路径、区域、目标RG及集群是实际想操作的环境；West US 3执行者须使用
+`local_execution/customer.westus3.local.json`等实际文件，不沿用旧West US配置。
+命令备份当前CFG，仅增加顶层布尔开关，不改变其他字段：
+
+```bash
+(
+  set -euo pipefail
+  umask 077
+  printf 'CFG=%s\n' "$CFG"
+  jq '{location,target,aks:.parameters.platform.stage4Aks.name,
+       authenticationMode:.application.authentication.mode,l3Audit}' "$CFG"
+  jq -e '.application.authentication.mode == "native" and .contentAudit.mode == "native"
+    and (has("auditRuntime") | not) and (has("auditGovernance") | not)
+    and ((has("l3Audit") | not) or .l3Audit == {"enabled":true})' "$CFG" >/dev/null
+  test -f "$CFG"
+  test ! -L "$CFG"
+  test -d "$L3_DIR"
+  CFG_BACKUP="$(mktemp "$L3_DIR/customer-before-l3.XXXXXXXX.json")"
+  cp "$CFG" "$CFG_BACKUP"
+  chmod 600 "$CFG_BACKUP"
+  CFG_TMP="$(mktemp "${CFG}.l3-merge.XXXXXXXX")"
+  trap 'rm -f -- "$CFG_TMP"' EXIT
+  jq '.l3Audit = {"enabled":true}' "$CFG" > "$CFG_TMP"
+  jq -e '.l3Audit.enabled == true and (.l3Audit.enabled | type) == "boolean"' "$CFG_TMP" >/dev/null
+  mv "$CFG_TMP" "$CFG"
+  chmod 600 "$CFG"
+  printf 'CFG backup: %s\n' "$CFG_BACKUP"
+)
+```
+
+执行后再确认，然后才能为L3重新生成Stage4计划。旧的基础版Stage4成功回执不能替代新配置的计划：
+
+```bash
+jq -e '.application.authentication.mode == "native" and .l3Audit.enabled == true
+  and (.l3Audit.enabled | type) == "boolean"' "$CFG"
+```
+
 Stage0–3及Stage5–7基础设施/应用指纹不因该开关改变；Stage4入口、Stage8审计、
 Stage9绑定会改变。代码revision变化仍遵循原runbook的证据复核要求，不伪造旧验收。
 
@@ -411,6 +449,9 @@ node l3-audit/dist/src/activation.js execute "$CFG" "$KCFG" "$EXPECTED_SERVER" \
 ```
 
 工具绑定计划文件哈希、代码、CFG、实际集群FQDN、Deployment UID/template和当前ConfigMap。
+若提示`Enable requires top-level l3Audit.enabled=true`，说明当前CFG尚未按5.1节启用，
+PG开关没有改变；完成合并后重新运行Stage4 plan/execute和协议验收，再运行PG激活计划，
+不复用之前基础版Stage4的哈希。
 执行仅创建内容寻址的不可变配置，再CAS替换该配置卷引用并等待rollout。
 只把 `store_prompts_in_spend_logs` 变为false，保留 `disable_spend_logs=false`、模型、
 预算、身份、费用日志及其他设置；不删除旧配置。冲突/漂移时重新计划，不强制接管。

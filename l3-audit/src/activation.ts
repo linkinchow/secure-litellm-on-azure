@@ -63,7 +63,13 @@ async function main(): Promise<void> {
   }
   const native = object(object(config.application).authentication).mode === 'native';
   const selected = object(config.l3Audit).enabled === true;
-  if (!native || selected !== (mode === 'enable')) throw new Error('CFG native/L3 mode differs from operation');
+  if (!native) throw new Error('PG activation requires application.authentication.mode=native; no changes performed');
+  if (mode === 'enable' && !selected) {
+    throw new Error('Enable requires top-level l3Audit.enabled=true (boolean) in CFG; merge the opt-in setting and rerun ingress plan/execute before PG activation');
+  }
+  if (mode === 'disable' && selected) {
+    throw new Error('Disable requires removing the top-level l3Audit setting from CFG; no changes performed');
+  }
   const sourceSha = sha(Buffer.concat(await Promise.all([
     new URL(import.meta.url), new URL('./record.js', import.meta.url),
     new URL('../../package.json', import.meta.url),

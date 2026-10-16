@@ -449,6 +449,11 @@ node l3-audit/dist/src/activation.js execute "$CFG" "$KCFG" "$EXPECTED_SERVER" \
 ```
 
 工具绑定计划文件哈希、代码、CFG、实际集群FQDN、Deployment UID/template和当前ConfigMap。
+AKS kubeconfig常显式包含`:443`，而ARM的`privateFqdn`没有端口；激活工具按规范化后的HTTPS
+origin核对二者，允许默认443端口和根路径`/`的等价写法，不放宽主机、端口、凭据或路径范围。
+旧版本若因此报`Kubeconfig does not target the approved AKS API`，先比对ARM实际FQDN，
+更新修复并重新`npm run build --prefix l3-audit`后生成新计划，不修改kubeconfig或绕过目标检查，
+也不重新部署基础设施、镜像或Stage4。
 若提示`Enable requires top-level l3Audit.enabled=true`，说明当前CFG尚未按5.1节启用，
 PG开关没有改变；完成合并后重新运行Stage4 plan/execute和协议验收，再运行PG激活计划，
 不复用之前基础版Stage4的哈希。

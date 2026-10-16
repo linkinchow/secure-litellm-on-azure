@@ -49,6 +49,18 @@ interface Plan {
   version: 1; enabled: boolean; sourceSha: string; configSha: string;
   kubeconfig: string; expectedServer: string; before: Snapshot; desired: Document;
 }
+export function privateApiOrigin(value: unknown, cluster: unknown): string {
+  if (typeof value !== 'string' || value.trim() !== value || !/^https:\/\/[a-zA-Z0-9.-]+(?::443)?\/?$/.test(value)
+    || typeof cluster !== 'string' || !/^[a-zA-Z0-9-]+$/.test(cluster)) {
+    throw new Error('AKS API must be an HTTPS private FQDN on port 443 without credentials, query or non-root path');
+  }
+  const url = new URL(value);
+  if (!url.hostname.startsWith(`${cluster.toLowerCase()}-`)
+    || !/\.privatelink\.[a-z0-9-]+\.azmk8s\.io$/.test(url.hostname)) {
+    throw new Error('Expected approved private AKS FQDN from az aks show');
+  }
+  return url.origin;
+}
 async function main(): Promise<void> {
   const [operation, configPath, kubeconfig, expectedServer, planPath, mode, approval] = process.argv.slice(2);
   if (!configPath || !kubeconfig || !expectedServer || !planPath
@@ -57,10 +69,7 @@ async function main(): Promise<void> {
   }
   const configText = await readFile(configPath, 'utf8'), config = object(JSON.parse(configText));
   const cluster = object(object(object(config.parameters).platform).stage4Aks).name;
-  if (typeof cluster !== 'string' || !expectedServer.startsWith(`https://${cluster}-`)
-    || !/\.privatelink\.[a-z0-9-]+\.azmk8s\.io(?::443)?$/.test(expectedServer)) {
-    throw new Error('Expected approved private AKS FQDN from az aks show');
-  }
+  const approvedServer = privateApiOrigin(expectedServer, cluster);
   const native = object(object(config.application).authentication).mode === 'native';
   const selected = object(config.l3Audit).enabled === true;
   if (!native) throw new Error('PG activation requires application.authentication.mode=native; no changes performed');
@@ -82,8 +91,8 @@ async function main(): Promise<void> {
     } catch { throw new Error('Scoped kubectl operation failed; inspect private connectivity, RBAC, admission or rollout'); }
   }
   const context = object(JSON.parse(await command(['config', 'view', '--minify', '-o', 'json'])));
-  const server = object(object(array(context.clusters)[0]).cluster).server;
-  if (server !== expectedServer) throw new Error('Kubeconfig does not target the approved AKS API');
+  const server = privateApiOrigin(object(object(array(context.clusters)[0]).cluster).server, cluster);
+  if (server !== approvedServer) throw new Error('Kubeconfig does not target the approved AKS API');
   const deployment = object(JSON.parse(await command(['get', 'deployment', 'litellm', '-o', 'json'])));
   const pod = object(object(object(deployment.spec).template).spec);
   const containers = array(pod.containers).map(object).filter(container => container.name === 'litellm');
@@ -101,7 +110,7 @@ async function main(): Promise<void> {
     metadata: { name: configName, namespace: 'litellm',
       labels: { 'app.kubernetes.io/managed-by': 'llmgw-workflow' } }, data: { 'config.yaml': wanted } };
   const plan: Plan = { version: 1, enabled: mode === 'enable', sourceSha, configSha: sha(configText),
-    kubeconfig, expectedServer, before, desired };
+    kubeconfig, expectedServer: approvedServer, before, desired };
   if (operation === 'plan') {
     await writeFile(planPath, JSON.stringify(plan), { mode: 0o600, flag: 'wx' });
     console.log(JSON.stringify({ pgContentEnabled: !plan.enabled, planSha256: sha(JSON.stringify(plan)),

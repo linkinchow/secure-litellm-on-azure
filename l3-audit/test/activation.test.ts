@@ -7,8 +7,24 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { sha } from '../src/record.js';
 import { parse as yamlParse } from 'yaml';
+import { privateApiOrigin } from '../src/activation.js';
 
 const execute = promisify(execFile);
+test('AKS API normalization equates default HTTPS port and root only, not different endpoints', () => {
+  const origin = 'https://aks-test-synthetic.id.privatelink.westus3.azmk8s.io';
+  for (const value of [origin, origin + ':443', origin + '/', origin + ':443/',
+    'https://' + new URL(origin).hostname.toUpperCase() + ':443/']) {
+    assert.equal(privateApiOrigin(value, 'aks-test'), origin);
+  }
+  for (const value of [origin.replace('https:', 'http:'), origin + ':8443', origin + '/api',
+    origin + '/a/..', origin + '?x=1', origin + '#x', origin.replace('https://', 'https://user@'),
+    origin.replace('https://', 'https://user:password@'), ' ' + origin, origin + '\n',
+    origin + '\\', origin + '.', origin.replace('aks-test-', 'aks-other-'), null]) {
+    assert.throws(() => privateApiOrigin(value, 'aks-test'));
+  }
+  const other = origin.replace('synthetic.id', 'different.id');
+  assert.notEqual(privateApiOrigin(other, 'aks-test'), privateApiOrigin(origin, 'aks-test'));
+});
 test('real activation CLI validates approval, blocks stale state and patches only runtime config volume', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'l3-activation-'));
   const fake = join(directory, 'kubectl'), statePath = join(directory, 'state.json');
@@ -16,7 +32,7 @@ test('real activation CLI validates approval, blocks stale state and patches onl
   const expected = 'https://aks-test-synthetic.id.privatelink.westus3.azmk8s.io';
   const image = 'synthetic.azurecr.io/backend@sha256:' + 'a'.repeat(64);
   const state = {
-    server: expected, applies: 0, patches: 0,
+    server: expected + ':443', applies: 0, patches: 0,
     deployment: { metadata: { name: 'litellm', namespace: 'litellm', uid: 'original-uid' },
       spec: { template: { metadata: { annotations: { preserved: 'yes' } },
         spec: { containers: [{ name: 'litellm', image }],
@@ -37,6 +53,14 @@ test('real activation CLI validates approval, blocks stale state and patches onl
     const planned = await execute(process.execPath, [...base, 'plan', ...rest], { env });
     const approved = JSON.parse(planned.stdout).planSha256 as string;
     assert.equal(approved, sha(await readFile(plan)));
+    assert.equal(JSON.parse(await readFile(plan, 'utf8')).expectedServer, expected);
+    state.server = expected.replace('synthetic.id', 'other.id') + ':443';
+    await writeFile(statePath, JSON.stringify(state));
+    await assert.rejects(execute(process.execPath, [...base, 'execute', ...rest, approved], { env }), error =>
+      error instanceof Error && error.message.includes('Kubeconfig does not target the approved AKS API'));
+    assert.equal(JSON.parse(await readFile(statePath, 'utf8')).applies, 0);
+    state.server = expected + ':443/';
+    await writeFile(statePath, JSON.stringify(state));
     const originalConfig = await readFile(cfg, 'utf8');
     const missingOptIn = JSON.parse(originalConfig);
     delete missingOptIn.l3Audit;

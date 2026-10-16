@@ -1,0 +1,7 @@
+node_modules
+dist
+test
+*.local.json
+.env*
+*.pem
+*.key

@@ -356,6 +356,8 @@ def deploy_component(config, stage, component, revision, operation, previous, di
         from scripts.stage9_release import validate_release
         require(stage == 9 and component == "edge", "Release operation only applies to Stage 9 edge")
         expected_audit = "native" if "contentAudit" in config else "l3"
+        require(release.get("optionalL3Enabled", False) is ("l3Audit" in config),
+                "Release optional L3 decision differs from customer configuration")
         require(release.get("auditMode", "l3") == expected_audit, "Release audit mode differs from customer configuration")
         from scripts.backend_manifest import application_authentication
         expected_authentication = application_authentication(config)["mode"] if "application" in config else "entra"

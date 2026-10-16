@@ -14,6 +14,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  optional-l3:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+      - run: npm ci --prefix l3-audit --ignore-scripts --no-fund
+      - run: npm test --prefix l3-audit
+      - run: az bicep build --file infra/optional-l3/main.bicep --stdout >/dev/null
   customer-migration:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -42,6 +55,7 @@ jobs:
           python -m unittest tests.test_azure_application tests.test_schema_migration tests.test_schema_runtime
           python -m unittest tests.test_runtime_secrets tests.test_backend_access
           python -m unittest tests.test_backend_manifest
+          python -m unittest tests.test_optional_l3
           python -m unittest tests.test_model_sync tests.test_model_sync_evidence tests.test_model_configuration
           mkdir -p temp/model-sync-ci
           chmod 700 temp/model-sync-ci

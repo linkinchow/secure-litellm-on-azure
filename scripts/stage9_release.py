@@ -39,6 +39,8 @@ def release_checks(config):
     if phase not in {"prepare", "canary", "production"}:
         raise ValueError("phase must be prepare, canary or production")
     mode = config.get("auditMode", "l3")
+    if "optionalL3Enabled" in config and type(config["optionalL3Enabled"]) is not bool:
+        raise ValueError("optionalL3Enabled must be a boolean")
     if mode not in {"l3", "native"}:
         raise ValueError("Release auditMode must be native or l3")
     authentication = config.get("authenticationMode", "entra")
@@ -59,6 +61,8 @@ def release_checks(config):
             if not config["telemetryEnabled"]:
                 required.remove("telemetry_alerts")
                 required.add("telemetry_disabled")
+    if config.get("optionalL3Enabled") is True and phase != "prepare":
+        required.update({"l3_protocol_capture", "l3_delivery_recovery", "l3_query_hold", "l3_alerts"})
     return required
 
 

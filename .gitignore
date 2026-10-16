@@ -233,6 +233,9 @@ docs/superpowers/
 !docs/litellm-runtime-config-runbook-zh.md
 
 auth-proxy/node_modules/
+l3-audit/node_modules/
+l3-audit/dist/
+l3-audit/*.local.json
 auth-proxy/*.local.json
 config/*.local.json
 config/customer.json
@@ -243,6 +246,7 @@ config/migration-evidence.json
 !docs/litellm-content-audit-phase1-customer-brief-zh.md
 !docs/litellm-ingress-tls-certificate-design-zh.md
 !docs/litellm-ingress-certificate-import-runbook-zh.md
+!docs/litellm-optional-l3-runbook-zh.md
 !docs/customer-private-runner-preparation-zh.md
 
 local_execution/customer.json

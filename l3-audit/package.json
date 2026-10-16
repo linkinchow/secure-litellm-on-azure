@@ -1,0 +1,23 @@
+{
+  "name": "litellm-optional-l3-audit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24 <25" },
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "start": "node dist/src/server.js",
+    "admin": "node dist/src/admin.js"
+  },
+  "dependencies": {
+    "@azure/identity": "4.13.2",
+    "@azure/storage-blob": "12.33.0",
+    "eventsource-parser": "4.1.0",
+    "yaml": "2.8.2"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "typescript": "5.9.3"
+  }
+}

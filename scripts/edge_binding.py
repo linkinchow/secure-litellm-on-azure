@@ -222,7 +222,8 @@ def native_ingress_document_state(config, config_map, deployment, service, ident
     require(business == {"rule": expected_rule, "entryPoints": ["websecure"], "service": plane, "tls": {}}, f"Native {plane} ingress business route differs from the reviewed contract")
     require(health == {"rule": native_health_rule(host), "entryPoints": ["websecure"], "service": plane, "middlewares": [health_path], "tls": {}}, f"Native {plane} ingress health router differs from the reviewed contract")
     require(http.get("middlewares") == {health_path: {"replacePath": {"path": "/health/readiness"}}}, f"Native {plane} ingress middleware differs from the reviewed contract")
-    require(http.get("services") == {plane: {"loadBalancer": {"servers": [{"url": "http://litellm.litellm.svc.cluster.local:4000"}], "passHostHeader": True}}}, f"Native {plane} ingress targets an unexpected service")
+    from scripts.optional_l3 import upstream
+    require(http.get("services") == {plane: {"loadBalancer": {"servers": [{"url": upstream(config, plane)}], "passHostHeader": True}}}, f"Native {plane} ingress targets an unexpected service")
     service_spec = service.get("spec", {})
     expected_sources = source_ranges([*config["privateIngress"][plane]["allowedCidrs"], config["parameters"]["platform"]["stage4Network"]["ingressSubnetPrefix"]])
     expected_labels = {"app.kubernetes.io/name": "llmgw-ingress", "app.kubernetes.io/component": "controller", "app.kubernetes.io/managed-by": "llmgw-workflow", "plane": plane}

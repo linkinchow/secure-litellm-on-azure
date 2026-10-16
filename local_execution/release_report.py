@@ -54,6 +54,8 @@ def generate_report(config, settings, revision, change_ticket, approvers, azure)
         "revision": revision,
         "configSha256": stage_fingerprint(config, 9),
     }
+    if "l3Audit" in config:
+        report["optionalL3Enabled"] = True
     mode, eligible = approval_policy(config)
     count = 1 if mode == "single-operator" else 2
     require(len(approvers) == count, "Approval count differs from the configured policy")

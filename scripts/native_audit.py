@@ -31,7 +31,8 @@ def render_native_audit(config, source):
     config_map = candidates[0]
     runtime = yaml.safe_load(config_map["data"]["config.yaml"])
     require(not runtime.get("litellm_settings", {}).get("callbacks") and not runtime.get("litellm_settings", {}).get("success_callback"), "Review content callbacks before enabling native audit")
-    runtime["general_settings"].update(disable_spend_logs=False, store_prompts_in_spend_logs=True,
+    from scripts.optional_l3 import enabled
+    runtime["general_settings"].update(disable_spend_logs=False, store_prompts_in_spend_logs=not enabled(config),
                                        maximum_spend_logs_retention_period=f"{settings['retentionDays']}d",
                                        maximum_spend_logs_retention_interval="1d")
     content = yaml.safe_dump(runtime, sort_keys=False)

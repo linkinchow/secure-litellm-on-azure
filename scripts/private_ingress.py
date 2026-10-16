@@ -142,7 +142,9 @@ def render_ingress(config, plane, image, ranges):
     network = config["parameters"]["platform"]["stage4Network"]
     allowed = source_ranges([*ranges, network["ingressSubnetPrefix"]])
     metadata = {"name": name, "namespace": name, "labels": labels}
-    upstream = "http://litellm.litellm.svc.cluster.local:4000" if native else f"http://llm-{plane}-proxy.litellm.svc.cluster.local:8080"
+    from scripts.optional_l3 import enabled, upstream as native_upstream
+    audit_proxy = native and plane == "api" and enabled(config)
+    upstream = native_upstream(config, plane) if native else f"http://llm-{plane}-proxy.litellm.svc.cluster.local:8080"
     business_rule = native_api_rule(hosts[plane]) if native and plane == "api" else native_admin_rule(hosts[plane]) if native else f"Host(`{hosts[plane]}`)"
     routers = {plane: {"rule": business_rule, "entryPoints": ["websecure"], "service": plane, "tls": {}}}
     middlewares = {}
@@ -199,7 +201,7 @@ def render_ingress(config, plane, image, ranges):
             "ingress": [{"from": [{"ipBlock": {"cidr": cidr}} for cidr in allowed], "ports": [{"protocol": "TCP", "port": 8443}]}],
             "egress": [
                 {"to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}}, "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}}}], "ports": [{"protocol": "UDP", "port": 53}, {"protocol": "TCP", "port": 53}]},
-                {"to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "litellm"}}, "podSelector": {"matchLabels": {"app.kubernetes.io/name": "litellm", "app.kubernetes.io/component": "gateway"} if native else {"app.kubernetes.io/name": "entra-auth-proxy", "plane": plane}}}], "ports": [{"protocol": "TCP", "port": 4000 if native else 8080}]},
+                {"to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "litellm"}}, "podSelector": {"matchLabels": {"app.kubernetes.io/name": "l3-audit"} if audit_proxy else {"app.kubernetes.io/name": "litellm", "app.kubernetes.io/component": "gateway"} if native else {"app.kubernetes.io/name": "entra-auth-proxy", "plane": plane}}}], "ports": [{"protocol": "TCP", "port": 8080 if audit_proxy or not native else 4000}]},
             ],
         }},
     ]

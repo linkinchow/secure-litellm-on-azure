@@ -6,6 +6,11 @@
 
 ## 当前运行状态（2026-10-09）
 
+**可选L3增强（Stage2–9之后）：** 默认仍为批准的原生Spend Logs/PG正文路径，
+不执行额外步骤不改变基线。需要独立Blob原文、LAW索引及IT管理员CLI查询/保全时，
+另按[TypeScript L3原文审计runbook](../docs/litellm-optional-l3-runbook-zh.md)部署并验收，
+不要混用下文历史Entra代理L3步骤或提前加入`l3Audit`。
+
 **Native WSS部署/升级补充：** 新版本Stage4私有ingress和Stage9 API WAF默认支持两个Responses路径的合法WebSocket握手，保留原POST路径及FDID隔离，不需要升级LiteLLM 1.104.0。已有West US 3等native dev/test canary环境须按[WSS升级执行单](native-wss-upgrade-zh.md)重跑`stage4-private-ingress`、专用API WAF plan/execute和`stage9-edge-bind`，再刷新报告及做真实两轮/工具验收；不要重跑`edge-prepare`或DNS切换。当前运行状态段落中的Codex推理成功不等于WSS已验收。Entra代理不在本次协议扩展范围。
 
 当前greenfield native dev/test网关已在West US 3运行：Private AKS为`Running/Succeeded`，Azure RBAC与禁用本地账号、WI/OIDC均开启，Azure CNI Overlay，2个system加2个user节点，节点SKU `Standard_D4s_v4`。API/Admin通过Front Door Premium分别连接两条PLS和两个私有入口；这不是生产容量或其他区域可用性保证。

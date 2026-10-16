@@ -111,6 +111,8 @@ def active_stages(config):
 def stage_title(stage, config):
     require(stage in active_stages(config), "Stage does not apply to the selected deployment mode")
     if stage == 8 and "contentAudit" in config:
+        if "l3Audit" in config:
+            return "Optional TypeScript L3 and native spend metadata"
         return "Native Spend Logs and observability"
     if deployment_mode(config) == "greenfield":
         return {0: "New environment prerequisites", 5: "Data platform and database initialization", 9: "Approved pilot and first release"}.get(stage, STAGES[stage][0])
@@ -136,6 +138,9 @@ def stage_checks(stage, config):
             6: ("replica_failure", "load_affinity", "capacity_limits", "target_database_scope"),
         }
         checks = list(replacements.get(stage, checks))
+    if stage == 8 and "l3Audit" in config:
+        checks = ["native_spend_metadata", "l3_protocol_capture", "l3_delivery_recovery",
+                  "l3_query_hold", "l3_alerts", "native_api_route_isolation"]
     if stage == 9 and approval_policy(config)[0] == "single-operator":
         checks[-1] = "single_operator_release"
     return checks
@@ -143,6 +148,8 @@ def stage_checks(stage, config):
 
 def stage_fingerprint(config, stage):
     scoped = {key: value for key, value in config.items() if key != "parameters"}
+    if stage != 4 and stage < 8:
+        scoped.pop("l3Audit", None)
     if 4 <= stage < 6:
         scoped["applicationAuthenticationMode"] = config.get("application", {}).get("authentication", {}).get("mode", "entra")
     if stage < 1:
@@ -229,7 +236,10 @@ def validate_config(config, environment):
     required_fields = {"schemaVersion", "environment", "azure", "location", "baseDomain", "ownerEmail", "target", "parameters"}
     if mode == "migration":
         required_fields.add("legacy")
-    require(set(config) - {"governance", "deploymentMode", "privateIngress", "databaseAccess", "application", "proxy", "entra", "auditRuntime", "contentAudit", "observability", "auditGovernance", "dns", "certificates", "legacyAccess"} == required_fields, "Unexpected or missing customer configuration fields; greenfield must omit legacy")
+    require(set(config) - {"governance", "deploymentMode", "privateIngress", "databaseAccess", "application", "proxy", "entra", "auditRuntime", "contentAudit", "observability", "auditGovernance", "dns", "certificates", "legacyAccess", "l3Audit"} == required_fields, "Unexpected or missing customer configuration fields; greenfield must omit legacy")
+    if "l3Audit" in config:
+        from scripts.optional_l3 import enabled
+        enabled(config)
     native_gateway = config.get("application", {}).get("authentication", {}).get("mode") == "native"
     if native_gateway:
         require("contentAudit" in config, "Native gateway authentication requires the explicit native Spend Logs policy")

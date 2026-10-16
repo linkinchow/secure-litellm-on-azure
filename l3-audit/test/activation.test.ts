@@ -1,0 +1,57 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { mkdtemp, copyFile, chmod, readFile, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { sha } from '../src/record.js';
+import { parse as yamlParse } from 'yaml';
+
+const execute = promisify(execFile);
+test('real activation CLI validates approval, blocks stale state and patches only runtime config volume', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'l3-activation-'));
+  const fake = join(directory, 'kubectl'), statePath = join(directory, 'state.json');
+  const cfg = join(directory, 'customer.json'), plan = join(directory, 'plan.json');
+  const expected = 'https://aks-test-synthetic.id.privatelink.westus3.azmk8s.io';
+  const image = 'synthetic.azurecr.io/backend@sha256:' + 'a'.repeat(64);
+  const state = {
+    server: expected, applies: 0, patches: 0,
+    deployment: { metadata: { name: 'litellm', namespace: 'litellm', uid: 'original-uid' },
+      spec: { template: { metadata: { annotations: { preserved: 'yes' } },
+        spec: { containers: [{ name: 'litellm', image }],
+          volumes: [{ name: 'config', configMap: { name: 'litellm-config-old' } }] } } } },
+    configMap: { metadata: { name: 'litellm-config-old' }, data: {
+      'config.yaml': 'model_list: []\ngeneral_settings:\n  disable_spend_logs: false\n  store_prompts_in_spend_logs: true\n' } },
+  };
+  try {
+    await copyFile(new URL('../../test/fixtures/kubectl.mjs', import.meta.url), fake);
+    await chmod(fake, 0o700);
+    await writeFile(statePath, JSON.stringify(state));
+    await writeFile(cfg, JSON.stringify({ l3Audit: { enabled: true },
+      application: { backendImage: image, authentication: { mode: 'native' } },
+      parameters: { platform: { stage4Aks: { name: 'aks-test' } } } }));
+    const env = { ...process.env, PATH: `${directory}:${process.env.PATH}`, L3_FIXTURE_STATE: statePath };
+    const base = [new URL('../src/activation.js', import.meta.url).pathname];
+    const rest = [cfg, join(directory, 'synthetic-kubeconfig'), expected, plan, 'enable'];
+    const planned = await execute(process.execPath, [...base, 'plan', ...rest], { env });
+    const approved = JSON.parse(planned.stdout).planSha256 as string;
+    assert.equal(approved, sha(await readFile(plan)));
+    await assert.rejects(execute(process.execPath, [...base, 'execute', ...rest, '0'.repeat(64)], { env }));
+    assert.equal(JSON.parse(await readFile(statePath, 'utf8')).applies, 0);
+    state.deployment.metadata.uid = 'changed-uid';
+    await writeFile(statePath, JSON.stringify(state));
+    await assert.rejects(execute(process.execPath, [...base, 'execute', ...rest, approved], { env }));
+    assert.equal(JSON.parse(await readFile(statePath, 'utf8')).applies, 0);
+    state.deployment.metadata.uid = 'original-uid';
+    await writeFile(statePath, JSON.stringify(state));
+    const executed = await execute(process.execPath, [...base, 'execute', ...rest, approved], { env });
+    assert.equal(JSON.parse(executed.stdout).rolloutVerified, true);
+    const after = JSON.parse(await readFile(statePath, 'utf8'));
+    assert.equal(after.applies, 1); assert.equal(after.patches, 1);
+    assert.equal(after.deployment.spec.template.metadata.annotations.preserved, 'yes');
+    assert.equal(after.deployment.spec.template.spec.containers[0].image, image);
+    assert.equal(yamlParse(after.configMap.data['config.yaml']).general_settings.store_prompts_in_spend_logs, false);
+    await assert.rejects(execute(process.execPath, [...base, 'execute', ...rest, approved], { env }));
+  } finally { await rm(directory, { recursive: true }); }
+});

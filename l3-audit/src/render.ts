@@ -1,18 +1,24 @@
 import { readFile, writeFile } from 'node:fs/promises';
-import { isIP } from 'node:net';
+import { privateIPv4 } from './private-endpoints.js';
 
 export interface DeploymentSettings {
   image: string; clientId: string; storageUrl: string; dce: string; dcr: string; privateEndpointIps: string[];
 }
 export function render(settings: DeploymentSettings): object[] {
-  if (!/^[a-z0-9]+\.azurecr\.io\/[a-z0-9/._-]+@sha256:[a-f0-9]{64}$/.test(settings.image)
-    || !/^[a-f0-9-]{36}$/i.test(settings.clientId)
-    || !/^https:\/\/[a-z0-9]{3,24}\.blob\.core\.windows\.net\/?$/.test(settings.storageUrl)
-    || !/^https:\/\/[a-z0-9.-]+\.ingest\.monitor\.azure\.com\/?$/.test(settings.dce)
-    || !/^dcr-[a-f0-9]{32}$/.test(settings.dcr)
-    || !settings.privateEndpointIps.length
-    || !settings.privateEndpointIps.every(ip => isIP(ip) === 4 && /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip))) {
-    throw new Error('Invalid immutable L3 deployment settings');
+  for (const [field, pattern] of [
+    ['image', /^[a-z0-9]+\.azurecr\.io\/[a-z0-9/._-]+@sha256:[a-f0-9]{64}$/],
+    ['clientId', /^[a-f0-9-]{36}$/i],
+    ['storageUrl', /^https:\/\/[a-z0-9]{3,24}\.blob\.core\.windows\.net\/?$/],
+    ['dce', /^https:\/\/[a-z0-9.-]+\.ingest\.monitor\.azure\.com\/?$/],
+    ['dcr', /^dcr-[a-f0-9]{32}$/],
+  ] as const) {
+    if (typeof settings[field] !== 'string' || !pattern.test(settings[field])) {
+      throw new Error(`Invalid L3 deployment field: ${field}; verify the approved image digest and infrastructure outputs`);
+    }
+  }
+  if (!Array.isArray(settings.privateEndpointIps) || !settings.privateEndpointIps.length
+    || !settings.privateEndpointIps.every(privateIPv4)) {
+    throw new Error('Invalid L3 deployment field: privateEndpointIps; discover actual approved PE NIC private IPv4 addresses, not REPLACE placeholders');
   }
   const labels = { 'app.kubernetes.io/name': 'l3-audit' };
   const metadata = (name: string): object => ({ name, namespace: 'litellm', labels });

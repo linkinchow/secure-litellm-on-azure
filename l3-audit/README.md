@@ -97,6 +97,7 @@ docker build --platform linux/amd64 \
 | [src/queue.ts](src/queue.ts) | 磁盘缓冲、交付检查点、重试和损坏记录隔离 |
 | [src/azure.ts](src/azure.ts) | Blob 原文与 LAW 索引交付 |
 | [src/render.ts](src/render.ts) | 生成可审查的 Kubernetes 工作负载 |
+| [src/private-endpoints.ts](src/private-endpoints.ts) | 从部署输出校验 PE/NIC 并自动发现私有 IP |
 | [src/activation.ts](src/activation.ts) | 带审批哈希和漂移校验的 PG 正文开关发布 |
 | [src/admin.ts](src/admin.ts) | `query`、`get`、`hold`、`release` 管理员操作 |
 | [test/](test/) | 合成协议、队列、Azure 接口及激活 CLI 回归 |

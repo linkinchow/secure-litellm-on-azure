@@ -323,17 +323,32 @@ EXPECTED_SERVER="https://$(az aks show --subscription "$SUBSCRIPTION_ID" \
   -g "$TARGET_RG" -n "$AKS_NAME" --query privateFqdn -o tsv)"
 ```
 
-准备渲染设置：`privateEndpointIps`填写**已核对的Blob及Azure Monitor PE实际NIC IPv4集合**，
-不是公网DNS结果，不是示例10.x。模板创建的writer只对普通内容容器和DCR有写入权限，不能管理保全容器。
+准备渲染设置：从本次部署`outputs.json`的两个PE资源ID自动读取**实际NIC的全部私有IPv4**，
+无需手工填写IP。工具核对CFG订阅/RG、目标子网、Blob账号/Monitor连接、
+Succeeded/Approved及NIC归属，缺少或不匹配时停止，不猜公网DNS或示例地址。
+执行身份需要对目标PE及其NIC的管理面读取权限。此处不创建/修改PE或writer身份，
+writer由第3节Bicep创建，只能访问普通内容容器和DCR，不能管理保全容器。
 
 ```bash
-PE_IPS='["REPLACE_BLOB_PE_IP","REPLACE_MONITOR_PE_IPS_AS_NEEDED"]'
+npm run build --prefix l3-audit &&
+PE_IPS="$(node l3-audit/dist/src/private-endpoints.js "$CFG" "$L3_DIR/outputs.json")" &&
 jq --arg image "$L3_IMAGE" --argjson ips "$PE_IPS" \
   '.deploymentSettings.value + {image:$image,privateEndpointIps:$ips}' \
-  "$L3_DIR/outputs.json" > "$L3_DIR/deployment-settings.json"
-node l3-audit/dist/src/render.js "$L3_DIR/deployment-settings.json" "$L3_DIR/workload.json"
+  "$L3_DIR/outputs.json" > "$L3_DIR/deployment-settings.json" &&
+node l3-audit/dist/src/render.js "$L3_DIR/deployment-settings.json" "$L3_DIR/workload.json" &&
 kubectl --kubeconfig "$KCFG" -n litellm apply --server-side \
   --field-manager=llmgw-l3 --dry-run=server -f "$L3_DIR/workload.json"
+```
+
+上述命令链任一步失败都停止，不继续diff/apply。`Invalid L3 deployment field`会指出
+具体字段；占位符IP、空镜像digest或缺少部署输出都不能继续发布。
+`workload.json`为独占创建，已有文件时先核对/归档旧计划或使用新的明确文件名，
+不要为了重试而删除整个`L3_DIR`（其中有配置备份与kubeconfig）。
+发现实际NIC地址不等于Runner/Pod的DNS和路由已通过验证，仍需执行网络及业务验收。
+
+成功生成且server dry-run通过后，单独审查diff：
+
+```bash
 kubectl --kubeconfig "$KCFG" -n litellm diff --server-side \
   --field-manager=llmgw-l3 -f "$L3_DIR/workload.json"
 ```

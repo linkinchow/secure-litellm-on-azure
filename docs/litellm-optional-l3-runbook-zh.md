@@ -367,6 +367,64 @@ kubectl --kubeconfig "$KCFG" -n litellm get pods,pvc -l app.kubernetes.io/name=l
 两个Pod须Ready，两个PVC须Bound。每副本缓冲独立，PVC保留，不缩容/删除StatefulSet来“清积压”。
 健康端点HTTP200只说明业务代理可响应；必须检查其`spoolReady=true`及计数，不能只看Ready。
 
+切换路由或关闭PG正文前，必须在**两个副本**执行采集就绪检查。以下检查不读取任何原文，
+`spoolReady=false`会返回非零，停止后续操作：
+
+```bash
+kubectl --kubeconfig "$KCFG" -n litellm exec l3-audit-0 -c l3-audit -- node -e 'fetch("http://127.0.0.1:8080/l3/health").then(r=>r.json()).then(x=>{console.log(JSON.stringify(x));if(x.spoolReady!==true)process.exitCode=1}).catch(()=>{console.error("health-read-failed");process.exitCode=1})' &&
+kubectl --kubeconfig "$KCFG" -n litellm exec l3-audit-1 -c l3-audit -- node -e 'fetch("http://127.0.0.1:8080/l3/health").then(r=>r.json()).then(x=>{console.log(JSON.stringify(x));if(x.spoolReady!==true)process.exitCode=1}).catch(()=>{console.error("health-read-failed");process.exitCode=1})'
+```
+
+### 4.1 Azure Disk `lost+found` 导致旧版队列无法初始化
+
+现象：Pod Running/Ready，但两个副本`spoolReady=false`，日志出现`spool-init-failed`、
+`capture-without-spool`，`queued=0`、`dropped`增长，LAW业务查询无记录。
+这不是LAW摄取延迟；在确认采集恢复之前不要继续关闭PG正文或声称L3可用。
+
+新格式化的Azure Disk根目录包含系统恢复目录`lost+found`。旧版将其误判为陌生队列文件，
+即使`/spool`可写仍初始化失败。修复仅忽略真实同名目录，不读取其中内容、不改变权限，
+同名文件/符号链接、其他陌生目录仍被拒绝。修复版健康端点还输出脱敏的`spoolErrorCode`，
+用于区分`unexpected-spool-entry`、`EACCES`、`EROFS`等原因，不输出路径、正文或凭据。
+
+**不要删除`lost+found`，不要清空或重建PVC，不使用root/chmod 777绕过问题。**
+更新本修复后须重新构建并发布代理镜像；只在Runner运行`npm run build`不会更新Pod。
+
+恢复步骤：
+
+1. 保存两个副本当前健康计数、失败时间窗及固定诊断日志，作为审计缺口证据。
+   `capture-without-spool`的记录从未成功入队，不能从PVC补传；不要将其称为等待重试。
+2. 使用第4节流程构建修复版本、扫描/签名、登录ACR并推送，取得新的批准`L3_IMAGE` digest。
+   不继续使用旧Pod镜像digest；修复没有改变PVC挂载位置、身份或数据目录。
+3. 使用实际PE发现结果及新的镜像生成**新文件名**的manifest，不覆盖旧审核材料：
+
+```bash
+PE_IPS="$(node l3-audit/dist/src/private-endpoints.js "$CFG" "$L3_DIR/outputs.json")" &&
+jq --arg image "$L3_IMAGE" --argjson ips "$PE_IPS" \
+  '.deploymentSettings.value + {image:$image,privateEndpointIps:$ips}' \
+  "$L3_DIR/outputs.json" > "$L3_DIR/deployment-settings-spool-recovery.json" &&
+node l3-audit/dist/src/render.js \
+  "$L3_DIR/deployment-settings-spool-recovery.json" "$L3_DIR/workload-spool-recovery.json" &&
+kubectl --kubeconfig "$KCFG" -n litellm apply --server-side --field-manager=llmgw-l3 \
+  --dry-run=server -f "$L3_DIR/workload-spool-recovery.json"
+```
+
+单独运行`kubectl diff --server-side --field-manager=llmgw-l3`审查新manifest。
+本次恢复预期仅StatefulSet镜像digest改变，不应修改或删除PVC、SA身份、Service、
+现有路由或数据库配置；有其他差异时先查明原因。维护窗口批准后再执行：
+
+```bash
+kubectl --kubeconfig "$KCFG" -n litellm apply --server-side --field-manager=llmgw-l3 \
+  -f "$L3_DIR/workload-spool-recovery.json" &&
+kubectl --kubeconfig "$KCFG" -n litellm rollout status statefulset/l3-audit --timeout=15m
+```
+
+4. 重新执行上面的两个副本采集就绪检查，必须均为`spoolReady=true`。
+5. 再做一条新的合成请求，确认`queued`/`delivered`增长、Blob原文及LAW业务索引可查。
+   若初始化已成功但`failures`或积压增长，再分别排查Blob/DCE权限、私网和交付；本修复不证明这些链路已验收。
+
+若PG正文已经关闭，故障窗口可能只剩费用元数据。需恢复基础版记录时按第8节批准回退，
+不得把仅修复代理启动解释为已补齐历史缺口。诊断和修复操作不自动改写PG或API路由。
+
 ## 5. 切换 API 路由与 PG 正文所有权
 
 ### 5.1 加入显式可选配置

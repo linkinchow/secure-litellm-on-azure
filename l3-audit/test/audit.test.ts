@@ -1,13 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, writeFile, mkdir, chmod, symlink, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import http from 'node:http';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { Capture, CONTENT_LIMIT, MEMORY_LIMIT, parse, type RecordEnvelope } from '../src/record.js';
-import { Queue, type Delivery } from '../src/queue.js';
+import { Queue, spoolFailureCode, type Delivery } from '../src/queue.js';
 import { FrameTap, Session } from '../src/websocket.js';
 import { createProxy } from '../src/proxy.js';
 import { render } from '../src/render.js';
@@ -80,6 +80,39 @@ test('persistent queue survives restart; content precedes index; retries do not 
     fail = false; await restarted.tick();
     assert.equal(content, 1); assert.equal(index, 2); assert.equal((await readdir(directory)).length, 0);
   } finally { await rm(directory, { recursive: true }); }
+});
+test('Azure Disk lost+found directory remains untouched and does not prevent queue init or recovery', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'l3-azure-disk-'));
+  const recovery = join(directory, 'lost+found');
+  const delivered: string[] = [];
+  const sink: Delivery = { async content() {}, async index(value) { delivered.push(value.id); } };
+  try {
+    await mkdir(recovery, { mode: 0o700 });
+    await writeFile(join(recovery, 'filesystem-recovery-metadata'), 'do-not-read-or-remove');
+    await chmod(recovery, 0);
+    const queue = new Queue(directory, sink); await queue.init();
+    assert.equal(queue.counters.diskBytes, 0);
+    const item = sample(); queue.enqueue(item); await queue.flush();
+    const restarted = new Queue(directory, sink); await restarted.init(); await restarted.tick();
+    assert.deepEqual(delivered, [item.index.id]);
+    assert.deepEqual(await readdir(directory), ['lost+found']);
+    assert.equal((await stat(recovery)).mode & 0o777, 0);
+  } finally { await chmod(recovery, 0o700); await rm(directory, { recursive: true }); }
+});
+test('only real lost+found directory is ignored; unknown entries, links and queue-named directories fail explicitly', async () => {
+  for (const kind of ['unknown-directory', 'queue-directory', 'lost-found-file', 'lost-found-symlink']) {
+    const directory = await mkdtemp(join(tmpdir(), 'l3-unexpected-'));
+    try {
+      if (kind === 'unknown-directory') await mkdir(join(directory, 'unexpected'));
+      if (kind === 'queue-directory') await mkdir(join(directory, 'record.json'));
+      if (kind === 'lost-found-file') await writeFile(join(directory, 'lost+found'), 'unexpected-file');
+      if (kind === 'lost-found-symlink') await symlink('/tmp', join(directory, 'lost+found'));
+      const queue = new Queue(directory, { async content() {}, async index() {} });
+      await assert.rejects(queue.init(), error => spoolFailureCode(error) === 'unexpected-spool-entry');
+    } finally { await rm(directory, { recursive: true }); }
+  }
+  assert.equal(spoolFailureCode(Object.assign(new Error('private-path'), { code: 'EACCES' })), 'EACCES');
+  assert.equal(spoolFailureCode(new Error('private-path private-body')), 'spool-initialization-error');
 });
 test('disk budget rejects audit only; expired records produce gap index and are removed', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'l3-expiry-'));

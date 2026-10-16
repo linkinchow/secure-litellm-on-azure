@@ -1,5 +1,5 @@
 import { AzureDelivery, settings } from './azure.js';
-import { Queue, signal } from './queue.js';
+import { Queue, signal, spoolFailureCode } from './queue.js';
 import { createProxy } from './proxy.js';
 import { randomUUID } from 'node:crypto';
 import type { Index } from './record.js';
@@ -8,10 +8,12 @@ import { WorkloadIdentityCredential } from '@azure/identity';
 const delivery = new AzureDelivery(settings(), new WorkloadIdentityCredential());
 const queue = new Queue(process.env.L3_SPOOL ?? '/spool', delivery);
 let spoolReady = false;
-try { await queue.init(); spoolReady = true; } catch { signal('spool-init-failed'); }
+let spoolErrorCode = '';
+try { await queue.init(); spoolReady = true; }
+catch (error) { spoolErrorCode = spoolFailureCode(error); signal('spool-init-failed', { errorCode: spoolErrorCode }); }
 const server = createProxy(new URL(process.env.L3_UPSTREAM ?? 'http://litellm.litellm.svc.cluster.local:4000'),
   record => { if (spoolReady) queue.enqueue(record); else { queue.counters.dropped++; signal('capture-without-spool'); } },
-  () => ({ spoolReady, ...queue.counters }));
+  () => ({ spoolReady, spoolErrorCode, ...queue.counters }));
 server.listen(8080, '0.0.0.0');
 setInterval(() => { if (spoolReady) void queue.tick(); }, 5000);
 let previousDrops = 0, previousFailures = 0;

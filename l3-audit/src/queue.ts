@@ -4,11 +4,18 @@ import { DISK_LIMIT, RETRY_MS, type Index, type RecordEnvelope } from './record.
 
 export interface Delivery { content(record: RecordEnvelope): Promise<void>; index(index: Index): Promise<void> }
 export interface Counters { queued: number; delivered: number; dropped: number; failures: number; diskBytes: number }
-export function signal(code: string): void {
-  console.error(JSON.stringify({ component: 'optional-l3', code, time: new Date().toISOString() }));
+export function signal(code: string, details?: { errorCode: string }): void {
+  console.error(JSON.stringify({ component: 'optional-l3', code, time: new Date().toISOString(), ...details }));
 }
 interface Pending { created: number; record: RecordEnvelope; contentDone: boolean }
 function code(error: unknown): string { return String((error as NodeJS.ErrnoException | null)?.code ?? ''); }
+class UnexpectedSpoolEntry extends Error {}
+export function spoolFailureCode(error: unknown): string {
+  if (error instanceof UnexpectedSpoolEntry) return 'unexpected-spool-entry';
+  const value = code(error);
+  return ['EACCES', 'EPERM', 'EROFS', 'ENOSPC', 'EDQUOT', 'EIO', 'ENOENT', 'ENOTDIR'].includes(value)
+    ? value : 'spool-initialization-error';
+}
 export class Queue {
   readonly counters: Counters = { queued: 0, delivered: 0, dropped: 0, failures: 0, diskBytes: 0 };
   private serial: Promise<void> = Promise.resolve();
@@ -19,7 +26,11 @@ export class Queue {
     private readonly limit = DISK_LIMIT, private readonly ttl = RETRY_MS) {}
   async init(): Promise<void> {
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
-    for (const name of await readdir(this.directory)) {
+    for (const entry of await readdir(this.directory, { withFileTypes: true })) {
+      // Newly formatted Azure Disk filesystems contain this root-owned recovery directory.
+      if (entry.name === 'lost+found' && entry.isDirectory()) continue;
+      if (!entry.isFile()) throw new UnexpectedSpoolEntry('Unexpected spool entry type');
+      const name = entry.name;
       if (name.endsWith('.tmp')) {
         await unlink(join(this.directory, name)); this.counters.dropped++; signal('crash-incomplete-enqueue'); continue;
       }
@@ -27,7 +38,7 @@ export class Queue {
         this.counters.diskBytes += (await stat(join(this.directory, name))).size;
         this.counters.dropped++; signal('quarantined-spool-record'); continue;
       }
-      if (!name.endsWith('.json')) throw new Error('Unexpected spool file');
+      if (!name.endsWith('.json')) throw new UnexpectedSpoolEntry('Unexpected spool file');
       this.counters.diskBytes += (await stat(join(this.directory, name))).size;
       this.pendingCount++;
     }

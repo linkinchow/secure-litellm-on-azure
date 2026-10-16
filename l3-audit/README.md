@@ -82,7 +82,7 @@ docker build --platform linux/amd64 \
 保全操作另外需要 `L3_SUBSCRIPTION`、`L3_RESOURCE_GROUP` 和 `L3_STORAGE_ACCOUNT`。
 管理员参数和完整命令见 runbook，不把管理员登录凭据注入服务 Pod。
 
-健康端点为 `GET /l3/health`，返回 `spoolReady` 及交付/丢失/失败/磁盘计数。
+健康端点为 `GET /l3/health`，返回 `spoolReady`、脱敏的 `spoolErrorCode` 及交付/丢失/失败/磁盘计数。
 **HTTP 200 或 Pod Ready 不代表审计正常**；应同时检查缓冲状态、LAW 心跳及实际告警通知。
 仅通过批准的私网或本机 `port-forward` 查看，不公开健康端点或正文。
 
@@ -111,6 +111,8 @@ docker build --platform linux/amd64 \
   详细阈值见 runbook；不能把原始内容预算当作进程总内存上限。
 - 请求结束前或 fsync 前退出可能丢失记录，PVC 丢失也无法保证恢复；**不承诺零丢失或
   exactly-once**。超限、断连、无法关联或交付失败必须保留缺口，不能冒充完整审计。
+- 支持 Azure Disk 根目录自带的 `lost+found` 恢复目录，不读取、删除或更改其权限；
+  同名文件/符号链接及其他未知条目仍使初始化失败。
 - 普通 Blob 使用 **30 天**生命周期阈值，实际删除有延迟；保全副本进入独立案件容器并设置
   legal hold，不受普通内容生命周期规则删除。
 - `release` 会在显式确认后解除整个案件的 hold 并删除案件容器，必须按批准流程执行。

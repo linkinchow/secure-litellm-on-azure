@@ -110,6 +110,29 @@ az bicep build --file infra/optional-l3/main.bicep --stdout >/dev/null
 这里只备份本次客户配置，不备份或输出任何数据库/运行Secret。
 选择已有L3与本方案迁移时停止，先审核已有存储、正文所有权及回退，不混用两套采集。
 
+### 2.1 防止旧配置与新环境混用
+
+`customer.json`不是固定文件名契约：迁移后请将`CFG`指向当前实际部署使用的文件，
+不要将旧West US配置用于West US 3。只改infra参数不能修复CFG，后面的Stage4仍会操作CFG中的集群。
+先输出并人工核对以下非敏感摘要；区域、目标RG、AKS、ACR、LAW、网络和证书Vault必须一致指向目标，
+如有`westus`/`westus3`、`wus1`/`wus3`等混用则停止，不批量字符串替换来重建配置。
+
+```bash
+jq '{location,target,aks:.parameters.platform.stage4Aks.name,
+     acr:.parameters.platform.containerRegistryName,
+     law:.parameters.platform.logAnalyticsWorkspaceName,
+     vnet:.parameters.platform.stage4Network.virtualNetworkName,
+     certificates:.privateIngress,backendImage:.application.backendImage}' "$CFG"
+AKS_FACTS="$(az aks show --subscription "$SUBSCRIPTION_ID" -g "$TARGET_RG" -n "$AKS_NAME" \
+  --query '{location:location,issuer:oidcIssuerProfile.issuerUrl,workloadIdentity:securityProfile.workloadIdentity.enabled,subnets:agentPoolProfiles[].vnetSubnetId}' \
+  -o json --only-show-errors)"
+printf '%s' "$AKS_FACTS" | jq -e --arg location "$(jq -er '.location' "$CFG")" \
+  '.location == $location and .workloadIdentity == true and (.issuer | startswith("https://"))' >/dev/null
+printf '%s\n' "$AKS_FACTS" | jq '.'
+```
+
+上述检查核对当前CFG所指资源，并不自动知道你“想部署”的环境；必须人工确认摘要。
+
 ## 3. 部署独立 Azure 资源
 
 模板：[infra/optional-l3/main.bicep](../infra/optional-l3/main.bicep)。
@@ -130,7 +153,7 @@ az bicep build --file infra/optional-l3/main.bicep --stdout >/dev/null
     "aksOidcIssuer": {"value": "REPLACE_ACTUAL_AKS_OIDC_ISSUER"},
     "administratorPrincipalId": {"value": "REPLACE_EXISTING_IT_ADMIN_GROUP_OBJECT_ID"},
     "administratorPrincipalType": {"value": "Group"},
-    "alertActionGroupId": {"value": "REPLACE_EXISTING_APPROVED_ACTION_GROUP_RESOURCE_ID"},
+    "alertEmail": {"value": "AUTO_FROM_CUSTOMER_CONFIG"},
     "existingMonitorScopeName": {"value": ""},
     "workspaceAlreadyLinkedToMonitorScope": {"value": false},
     "privateDnsZonesToCreate": {"value": []},
@@ -138,6 +161,52 @@ az bicep build --file infra/optional-l3/main.bicep --stdout >/dev/null
   }
 }
 ```
+
+### 3.1 自动填写客户告警邮箱及已知环境参数
+
+**不需要手工创建Action Group**。同一Bicep会创建`l3-<storageAccountName>-alerts`，
+两条告警直接引用它。邮箱优先取当前客户CFG的`ownerEmail`，不写死任何个人或示例客户地址。
+Runner使用Managed Identity/服务主体时没有“登录用户邮箱”，不能将其Client ID或显示名作为接收者。
+仅CFG缺少邮箱且CLI确为个人用户登录时才查询Microsoft Graph的`mail`；查询失败会显式停止，
+不改用可能是访客标识、服务账号或不可投递UPN的字符串。
+
+创建上面的参数文件后，在同一终端执行以下命令，自动填入邮箱、区域、LAW、VNet、子网和实际Issuer；
+新Storage名称、管理员Object ID及DNS/AMPLS决定仍需按第3.2节核对。
+
+```bash
+ALERT_EMAIL="$(jq -r '.ownerEmail // empty' "$CFG")"
+if [[ -z "$ALERT_EMAIL" ]]; then
+  LOGIN_TYPE="$(az account show --query user.type -o tsv --only-show-errors)"
+  if [[ "$LOGIN_TYPE" != "user" ]]; then
+    printf 'Cannot discover a human email from managed identity/service principal. Set approved CFG ownerEmail.\n' >&2
+    exit 1
+  fi
+  ALERT_EMAIL="$(az ad signed-in-user show --query mail -o tsv --only-show-errors)"
+fi
+if [[ ! "$ALERT_EMAIL" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+  printf 'Missing or invalid customer notification email; verify CFG ownerEmail or signed-in user mail.\n' >&2
+  exit 1
+fi
+printf 'L3 alert recipient from this customer configuration/login: %s\n' "$ALERT_EMAIL"
+AKS_ISSUER="$(printf '%s' "$AKS_FACTS" | jq -er '.issuer')"
+PARAMETERS_TMP="$(mktemp "$L3_DIR/infra.parameters.XXXXXXXX")"
+jq --arg email "$ALERT_EMAIL" --arg issuer "$AKS_ISSUER" \
+  --slurpfile config "$CFG" '
+  .parameters.alertEmail.value = $email |
+  .parameters.location.value = $config[0].location |
+  .parameters.workspaceName.value = $config[0].parameters.platform.logAnalyticsWorkspaceName |
+  .parameters.virtualNetworkName.value = $config[0].parameters.platform.stage4Network.virtualNetworkName |
+  .parameters.privateEndpointSubnetName.value = $config[0].parameters.platform.stage4Network.privateEndpointSubnetName |
+  .parameters.aksOidcIssuer.value = $issuer
+' "$L3_DIR/infra.parameters.json" > "$PARAMETERS_TMP"
+mv "$PARAMETERS_TMP" "$L3_DIR/infra.parameters.json"
+chmod 600 "$L3_DIR/infra.parameters.json"
+```
+
+无需再维护一份邮箱；但必须在What-if审核时确认接收者确实是客户希望通知的人。
+`ownerEmail`有效但指向其他负责人时不静默替换为操作员邮箱，按客户配置管理流程更正。
+
+### 3.2 参数取值与审核
 
 参数取值与审核：
 
@@ -147,8 +216,9 @@ az bicep build --file infra/optional-l3/main.bicep --stdout >/dev/null
    同时确认AKS OIDC及Workload Identity启用，不手填Issuer。
 3. 管理员填已有IT组的Object ID，不是Client ID。模板只在审计账号、目标workspace授权，
    管理员可读写审计正文并管理legal hold，**不是新的独立调查员权限体系**。
-4. Action Group填写实际批准的告警接收组；告警会在部署后生效，初期无心跳告警属于预期，
-   服务就绪后必须验证告警恢复及真实通知送达，不用空Action Group假装完成。
+4. `alertEmail`由第3.1节自动填入；部署身份须有目标RG内Action Group写入权限。
+   Bicep创建专用Action Group，不复用Smart Detection或旧环境接收者。告警在部署后生效，
+   初期无心跳告警属于预期；服务就绪后必须验证告警恢复及真实通知送达。
 5. **先盘点现有AMPLS。一个VNet不能关联不同AMPLS。** 已有时填写其实际名称，
    不创建另一个scope；如果workspace已在该scope内，`workspaceAlreadyLinkedToMonitorScope=true`。
    为空只适用于当前VNet没有AMPLS的情况。此模板支持同RG资源，跨RG DNS/AMPLS交网络Owner
@@ -180,7 +250,7 @@ az deployment group what-if --subscription "$SUBSCRIPTION_ID" -g "$TARGET_RG" \
   --parameters "@$L3_DIR/infra.parameters.json"
 ```
 
-审核What-if：只允许新增或明确批准的L3对象、目标LAW自定义表/角色及DNS链接，
+审核What-if：只允许新增或明确批准的L3对象（含专用Action Group和两条告警）、目标LAW自定义表/角色及DNS链接，
 **不得修改/删除AKS、节点池、业务PG、Front Door/WAF、现有访问策略或其他DNS记录**。
 现有同名表、scope关联或角色冲突时停止，不强制覆盖。按客户变更审批留存参数文件哈希及输出，
 执行前确认文件未改且没有并行基础设施变更；执行命令本身不是自动What-if范围校验器。
@@ -192,7 +262,7 @@ az deployment group create --subscription "$SUBSCRIPTION_ID" -g "$TARGET_RG" \
   --name optional-l3 --template-file infra/optional-l3/main.bicep \
   --parameters "@$L3_DIR/infra.parameters.json" \
   --query properties.outputs -o json > "$L3_DIR/outputs.json"
-jq '{deploymentSettings,workspaceId,privateEndpoints}' "$L3_DIR/outputs.json"
+jq '{deploymentSettings,workspaceId,privateEndpoints,alertActionGroupId}' "$L3_DIR/outputs.json"
 ```
 
 输出不含密钥。记录workspaceId、DCE URL、DCR immutable ID、writer Client ID、两个PE。

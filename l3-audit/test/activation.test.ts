@@ -37,6 +37,18 @@ test('real activation CLI validates approval, blocks stale state and patches onl
     const planned = await execute(process.execPath, [...base, 'plan', ...rest], { env });
     const approved = JSON.parse(planned.stdout).planSha256 as string;
     assert.equal(approved, sha(await readFile(plan)));
+    const originalConfig = await readFile(cfg, 'utf8');
+    const missingOptIn = JSON.parse(originalConfig);
+    delete missingOptIn.l3Audit;
+    await writeFile(cfg, JSON.stringify(missingOptIn));
+    await assert.rejects(execute(process.execPath, [...base, 'execute', ...rest, approved], { env }), error =>
+      error instanceof Error && error.message.includes('Enable requires top-level l3Audit.enabled=true'));
+    assert.equal(JSON.parse(await readFile(statePath, 'utf8')).applies, 0);
+    missingOptIn.l3Audit = { enabled: 'true' };
+    await writeFile(cfg, JSON.stringify(missingOptIn));
+    await assert.rejects(execute(process.execPath, [...base, 'execute', ...rest, approved], { env }), error =>
+      error instanceof Error && error.message.includes('Enable requires top-level l3Audit.enabled=true'));
+    await writeFile(cfg, originalConfig);
     await assert.rejects(execute(process.execPath, [...base, 'execute', ...rest, '0'.repeat(64)], { env }));
     assert.equal(JSON.parse(await readFile(statePath, 'utf8')).applies, 0);
     state.deployment.metadata.uid = 'changed-uid';

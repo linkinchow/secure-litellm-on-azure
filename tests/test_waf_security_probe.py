@@ -377,6 +377,19 @@ class WafSecurityProbeTests(unittest.TestCase):
                 probe.AzureRead(SUB).run(["resource", "list"])
             self.assertNotIn("private", str(failure.exception).split(";")[0])
 
+    def test_azure_cli_cannot_wait_for_hidden_extension_installation(self):
+        with patch.object(probe.subprocess, "run", return_value=Mock(
+                returncode=0, stdout='{"name":"log-analytics","version":"synthetic"}')) as command:
+            probe.AzureRead(SUB).require_logs_extension()
+        self.assertEqual(command.call_args.kwargs["stdin"], probe.subprocess.DEVNULL)
+        self.assertEqual(command.call_args.kwargs["env"]["AZURE_EXTENSION_USE_DYNAMIC_INSTALL"], "no")
+        self.assertIn("show", command.call_args.args[0])
+        self.assertNotIn("add", command.call_args.args[0])
+        self.assertNotIn("--subscription", command.call_args.args[0])
+        with patch.object(probe.subprocess, "run", return_value=Mock(returncode=1)):
+            with self.assertRaisesRegex(probe.VerificationError, "az extension add"):
+                probe.AzureRead(SUB).require_logs_extension()
+
     def test_redis_null_public_state_is_unverified_not_pass(self):
         azure = Mock()
         resource_id = ROOT + "Microsoft.Cache/redisEnterprise/redis"

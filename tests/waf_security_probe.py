@@ -7,6 +7,7 @@ import argparse
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -76,10 +77,13 @@ class AzureRead:
         self.subscription = subscription
 
     def run(self, arguments):
+        scope = [] if arguments[:1] == ["extension"] else ["--subscription", self.subscription]
         try:
-            result = subprocess.run(["az", *arguments, "--subscription", self.subscription,
+            result = subprocess.run(["az", *arguments, *scope,
                                      "--output", "json", "--only-show-errors"],
-                                    capture_output=True, text=True, timeout=120, check=False)
+                                    capture_output=True, text=True, timeout=120, check=False,
+                                    stdin=subprocess.DEVNULL,
+                                    env={**os.environ, "AZURE_EXTENSION_USE_DYNAMIC_INSTALL": "no"})
         except (OSError, subprocess.TimeoutExpired):
             raise VerificationError("Azure read failed or timed out; check az login and connectivity") from None
         require(result.returncode == 0,
@@ -88,6 +92,18 @@ class AzureRead:
             return json.loads(result.stdout)
         except ValueError:
             raise VerificationError("Azure returned invalid JSON; raw output withheld") from None
+
+    def require_logs_extension(self):
+        try:
+            extension = self.run(["extension", "show", "--name", "log-analytics",
+                                  "--query", "{name:name,version:version}"])
+        except VerificationError:
+            raise VerificationError(
+                "Cannot verify Azure CLI log-analytics extension. In the same CLI environment run "
+                "'az extension show --name log-analytics'; if missing, explicitly install with "
+                "'az extension add --name log-analytics', then retry verify. No active test replay needed") from None
+        require(extension.get("name") == "log-analytics" and bool(extension.get("version")),
+                "Invalid Azure CLI log-analytics extension metadata")
 
     def resource(self, identifier, version):
         result = self.run(["resource", "show", "--ids", identifier, "--api-version", version])
@@ -524,6 +540,7 @@ def verify(args):
     require(not report.get("adminOrigin") or report["adminOrigin"] == "https://llm-admin." + config["baseDomain"],
             "Report Admin origin differs from CFG")
     azure = AzureRead(config["azure"]["subscriptionId"])
+    azure.require_logs_extension()
     live = snapshot(config, azure)
     check_snapshot(report["snapshot"], live)
     require(live["workspaceId"] == report["snapshot"]["workspaceId"], "LAW differs from report")

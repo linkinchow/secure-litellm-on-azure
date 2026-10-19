@@ -28,6 +28,11 @@
 所以使用`python -m tests...`，不是从任意目录直接执行文件。
 需要Azure CLI、Reader或等效只读管理权限，以及批准LAW的日志查询权限；
 这不需要Storage正文读取权限或修改WAF权限。无法访问私网的操作机应通过获批路径接入。
+LAW查询需要Azure CLI的`log-analytics`扩展。在执行测试的同一用户、同一
+`AZURE_CONFIG_DIR`环境中先运行`az extension show --name log-analytics`；
+若明确提示未安装，再执行`az extension add --name log-analytics --only-show-errors`，
+然后重新核对扩展。不要依赖捕获输出的脚本内动态安装提示。
+脚本将动态安装禁用并关闭交互stdin，避免在不可见的`(Y/n)`提示上等到超时。
 
 ```bash
 set -euo pipefail
@@ -156,6 +161,7 @@ API为Detection时，方法用例允许观察到400/401/403/404/405/426等下游
 
 ## 6. 等日志到达后关联证据，不重复发请求
 
+先确认上述`log-analytics`扩展已安装；`verify`会预检查扩展。
 主动脚本不会为了等日志自动重放样本。等待Azure日志摄取后，在能查询LAW的机器执行：
 
 ```bash
@@ -211,6 +217,33 @@ host、tracking reference下组合这两类日志，自定义规则则要求其�
 
 无需更改WAF、重部署Stage4/9或修改LAW。如果v2仍提示某个组件变化，
 应按组件检查真实变更，不能直接重写报告哈希或将当前快照替换成测试时快照。
+
+### 6.2 Azure CLI超时、扩展提示和空workspace变量
+
+`Azure read failed or timed out`不等于权限不足。`verify`先读取edge，再查询LAW；
+旧版若缺少扩展，会在捕获输出的进程里等待动态安装确认，最终超时。
+新版预检查扩展并给出明确安装指引，不会后台安装或要求放宽Azure角色。
+安装完成后只需重新`verify`，无需重新发主动样本。
+
+手工排查时，`--workspace`需要**workspace customerId GUID**，不是名称、ARM ID或空变量。
+`verify`自己从已核对的LAW管理面读取GUID，不依赖`LAW_WORKSPACE_ID`环境变量；
+手动CLI查询和其他runbook可能依赖该变量，使用前自动获取并校验：
+
+```bash
+LAW_WORKSPACE_ID="$(az monitor log-analytics workspace show \
+  --subscription "$SUBSCRIPTION_ID" -g "$(jq -er '.target.resourceGroup' "$CFG")" \
+  -n "$(jq -er '.parameters.edge.logAnalyticsWorkspaceName' "$CFG")" \
+  --query customerId -o tsv --only-show-errors)" &&
+[[ "$LAW_WORKSPACE_ID" =~ ^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$ ]] &&
+az monitor log-analytics query --subscription "$SUBSCRIPTION_ID" \
+  --workspace "$LAW_WORKSPACE_ID" --analytics-query 'print connectivity=1' \
+  --timespan P1D -o json --only-show-errors
+```
+
+此查询不读取业务日志。返回`connectivity=1`证明该身份能完成此基础查询，
+不自动证明它有权读取全部表；之后按原报告重新`verify`检验实际WAF表查询。
+`PathNotFoundError`先核对workspace GUID；`AuthorizationFailed`/`Forbidden`再核对实际身份和
+表/资源范围授权。管理面可读不等于数据面可查，DNS/TLS超时也不能靠增加Owner权限解决。
 
 退出码：`run=0`只代表检查/请求完成且没有发现失败，可能仍`pendingWafEvidence=true`；
 `verify=0`只表示所执行用例满足当前验证条件，不是整体安全合规通过。

@@ -32,6 +32,45 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def resource_contract(document, kind):
+    """Remove only known ARM bookkeeping, never recursively strip rule fields."""
+    require(isinstance(document, dict), "Unexpected resource snapshot")
+    result = {key: value for key, value in document.items() if key not in {
+        "etag", "systemData", "provisioningState", "deploymentStatus"}}
+    properties = document.get("properties")
+    if isinstance(properties, dict):
+        omitted = {"provisioningState", "deploymentStatus", "resourceState"}
+        if kind == "domain":
+            # DNS validation tokens/expiry are not request filtering or TLS configuration.
+            omitted.update({"validationProperties", "domainValidationState"})
+        result["properties"] = {key: value for key, value in properties.items() if key not in omitted}
+    return result
+
+
+def collection_contract(documents, kind):
+    require(isinstance(documents, list) and all(isinstance(item, dict) for item in documents),
+            "Unexpected resource collection snapshot")
+    return sorted((resource_contract(item, kind) for item in documents), key=lambda value: digest(value))
+
+
+def check_snapshot(previous, current):
+    if previous.get("fingerprintVersion") != 2:
+        # Legacy reports have no recoverable semantic baseline; don't upgrade them in place.
+        require(isinstance(previous.get("fingerprint"), str)
+                and re.fullmatch(r"[a-f0-9]{64}", previous["fingerprint"])
+                and previous["fingerprint"] == current.get("legacyFingerprint"),
+                "Legacy raw edge fingerprint differs; old report cannot distinguish ARM metadata from real configuration drift. "
+                "Keep the report and its wafQuery, update the tool and run ONE new bounded suite to a new filename; do not bypass validation")
+        return
+    require(previous.get("fingerprint") == digest(previous.get("componentFingerprints")),
+            "Report component fingerprints are inconsistent")
+    before, after = previous.get("componentFingerprints"), current.get("componentFingerprints")
+    require(isinstance(before, dict) and isinstance(after, dict), "Missing semantic edge components")
+    changed = sorted(key for key in before.keys() | after.keys() if before.get(key) != after.get(key))
+    require(not changed, "Edge security configuration changed in components: " + ", ".join(changed)
+            + "; review the change before re-running tests")
+
+
 class AzureRead:
     def __init__(self, subscription):
         self.subscription = subscription
@@ -158,6 +197,10 @@ def snapshot(config, azure):
             and "/afdEndpoints/" in route, "Unexpected API route scope")
     profile = route.split("/afdEndpoints/")[0]
     checks, policies, contracts = [], {}, []
+    components = {"expectations": digest({
+        "azure": config["azure"], "environment": config["environment"],
+        "target": config["target"], "baseDomain": config["baseDomain"],
+        "edge": config["parameters"]["edge"]})}
     for plane in ("api", "admin"):
         host = "llm-" + plane + "." + config["baseDomain"]
         require(edge.get(plane + "Host") == host, "Edge hosts differ from CFG")
@@ -189,6 +232,7 @@ def snapshot(config, azure):
         origins = azure.run(["rest", "--method", "get", "--url", "https://management.azure.com" + profile
                             + "/originGroups/private-" + plane + "/origins?api-version=2025-04-15"])
         origin_values = origins.get("value", [])
+        require(not origins.get("nextLink"), "Origin collection is paginated; cannot verify a partial snapshot")
         expected_pls = edge.get("privateOrigin" if plane == "api" else "adminPrivateOrigin", {}).get(
             "privateLinkServiceId")
         checks.append(check(plane + "-private-origin-tls", bool(origin_values) and all(
@@ -202,6 +246,10 @@ def snapshot(config, azure):
                        else "unverified" if statuses and all(status in {None, "Approved"} for status in statuses)
                        else "fail"})
         contracts.extend([association, policy, live_route, domain, origins])
+        for name, document in (("association", association), ("policy", policy),
+                               ("route", live_route), ("domain", domain)):
+            components[plane + "." + name] = digest(resource_contract(document, name))
+        components[plane + ".origins"] = digest(collection_contract(origin_values, "origin"))
     require(policies["api"]["id"].lower() != policies["admin"]["id"].lower(), "API/Admin WAF must differ")
     diagnostics = azure.run(["monitor", "diagnostic-settings", "list", "--resource", profile])
     diagnostic_items = diagnostics if isinstance(diagnostics, list) else diagnostics.get("value", [])
@@ -215,8 +263,12 @@ def snapshot(config, azure):
                 or log.get("categoryGroup") == "allLogs") for log in item.get("logs", []))
         for item in diagnostic_items)))
     contracts.extend([diagnostics, workspace])
+    components["diagnostics"] = digest(collection_contract(diagnostic_items, "diagnostics"))
+    components["workspace"] = digest(workspace)
     return {"profileId": profile, "policies": policies, "workspaceId": workspace["customerId"],
-            "checks": checks, "fingerprint": digest(contracts)}
+            "checks": checks, "fingerprintVersion": 2,
+            "componentFingerprints": components, "fingerprint": digest(components),
+            "legacyFingerprint": digest(contracts)}
 
 
 def backend_checks(config, azure):
@@ -473,7 +525,7 @@ def verify(args):
             "Report Admin origin differs from CFG")
     azure = AzureRead(config["azure"]["subscriptionId"])
     live = snapshot(config, azure)
-    require(live["fingerprint"] == report["snapshot"]["fingerprint"], "Edge state changed since probe; re-run reviewed tests")
+    check_snapshot(report["snapshot"], live)
     require(live["workspaceId"] == report["snapshot"]["workspaceId"], "LAW differs from report")
     query = waf_query(report)
     rows = azure.run(["monitor", "log-analytics", "query", "--workspace", live["workspaceId"],

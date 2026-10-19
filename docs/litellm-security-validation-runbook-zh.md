@@ -166,6 +166,10 @@ API为Detection时，方法用例允许观察到400/401/403/404/405/426等下游
 
 每份报告分别验证，Admin报告对应自己的输出路径。工具会重读实时配置并检查指纹，
 若测试后模式/规则/关联等变化则要求重新审核，不将新配置解释为旧请求的证据。
+新版使用`fingerprintVersion=2`的分组件配置指纹，保留WAF规则/模式、关联、路由、
+源站、TLS及诊断设置，不把顶层ETag/systemData、资源部署状态、域名DNS验证token/到期时间
+等ARM运行元数据当作配置。错误会指出`api.policy`、`admin.route`等变化组件，
+不打印完整资源对象或潜在敏感值。
 AzureDiagnostics查询按原请求时间窗、profile resource ID、tracking reference限定，
 只投影rule/action/mode/policy/host，不导出匹配正文、Header或完整URI。
 当前自动查询适配仓库Front Door的AzureDiagnostics诊断路径；客户使用不同资源专用表时
@@ -183,6 +187,30 @@ AzureDiagnostics查询按原请求时间窗、profile resource ID、tracking ref
 host、tracking reference下组合这两类日志，自定义规则则要求其自身有Block记录。
 后续日志补齐时可对同一原报告重新verify，**输出必须使用新文件名**，不要覆盖旧证据。
 报告中的`wafQuery`可在批准的LAW终端手动执行；缺少`X-Azure-Ref`时不能自动关联。
+
+### 6.1 `Edge state changed since probe`如何处理
+
+旧版对Azure完整资源响应做哈希，ETag、系统时间、域名验证等元数据改变也会触发此错误。
+报错发生在日志查询前，并不等于WAF测试未命中。先确认测试期间是否确实修改过策略、
+模式、白名单、路由、诊断设置或CFG，不直接跳过检查，也不自动重发请求。
+
+旧报告只保存总哈希，没有可用于重建的分组件基线；如果原始总哈希仍匹配，新工具可继续验证。
+若不匹配则明确拒绝，不能安全区分元数据变化和真实配置变化，**不能把它就地升级或判为通过**。
+保留原报告与其中`wafQuery`，可手动查询历史日志作为观察证据；如需自动完整核验，
+更新修复代码后，在批准窗口仅重新执行一次第5节有界套件，使用新文件名：
+
+```bash
+.venv/bin/python -m tests.waf_security_probe run \
+  --config "$CFG" --api-url "$API_URL" --confirm-authorized-target --direct \
+  --output-json "$SECURITY_DIR/waf-api-v2.json"
+# 等日志摄取，再执行；不要循环重复run来等待日志。
+.venv/bin/python -m tests.waf_security_probe verify \
+  --config "$CFG" --report "$SECURITY_DIR/waf-api-v2.json" \
+  --output-json "$SECURITY_DIR/waf-api-v2-evidence.json"
+```
+
+无需更改WAF、重部署Stage4/9或修改LAW。如果v2仍提示某个组件变化，
+应按组件检查真实变更，不能直接重写报告哈希或将当前快照替换成测试时快照。
 
 退出码：`run=0`只代表检查/请求完成且没有发现失败，可能仍`pendingWafEvidence=true`；
 `verify=0`只表示所执行用例满足当前验证条件，不是整体安全合规通过。

@@ -46,7 +46,9 @@ def policy(plane="api"):
 
 
 def snapshot():
-    return {"profileId": PROFILE, "workspaceId": SUB, "fingerprint": "synthetic",
+    components = {"api.policy": probe.digest({"synthetic": True})}
+    return {"profileId": PROFILE, "workspaceId": SUB, "fingerprint": probe.digest(components),
+            "fingerprintVersion": 2, "componentFingerprints": components,
             "checks": [probe.check("synthetic", True)],
             "policies": {plane: {"id": ROOT + "Microsoft.Network/frontDoorWebApplicationFirewallPolicies/" + plane,
                                 "name": plane, "mode": "Prevention"} for plane in ("api", "admin")}}
@@ -265,11 +267,62 @@ class WafSecurityProbeTests(unittest.TestCase):
             path.write_text(json.dumps(report()))
             args.report = path
             live = snapshot()
-            live["fingerprint"] = "drift"
+            live["componentFingerprints"]["api.policy"] = probe.digest({"different": True})
+            live["fingerprint"] = probe.digest(live["componentFingerprints"])
             with patch.object(probe, "snapshot", return_value=live), patch.object(probe, "AzureRead") as azure:
                 with self.assertRaisesRegex(probe.VerificationError, "changed"):
                     probe.verify(args)
                 azure.return_value.run.assert_not_called()
+
+    def test_fingerprint_ignores_only_known_arm_metadata_not_security_configuration(self):
+        original = {"id": PROFILE + "/customDomains/llm-api", "etag": "old",
+                    "systemData": {"lastModifiedAt": "old"},
+                    "properties": {"provisioningState": "Succeeded", "deploymentStatus": "Succeeded",
+                        "hostName": "llm-api.customer.invalid", "domainValidationState": "Approved",
+                        "validationProperties": {"validationToken": "old", "expirationDate": "old"},
+                        "tlsSettings": {"certificateType": "ManagedCertificate", "minimumTlsVersion": "TLS12"}}}
+        bookkeeping = copy.deepcopy(original)
+        bookkeeping["etag"] = "new"
+        bookkeeping["systemData"]["lastModifiedAt"] = "new"
+        bookkeeping["properties"]["deploymentStatus"] = "InProgress"
+        bookkeeping["properties"]["validationProperties"]["validationToken"] = "new"
+        self.assertEqual(probe.resource_contract(original, "domain"), probe.resource_contract(bookkeeping, "domain"))
+        for field, value in (("hostName", "other.invalid"), ("tlsSettings", {"minimumTlsVersion": "TLS10"})):
+            changed = copy.deepcopy(original)
+            changed["properties"][field] = value
+            self.assertNotEqual(probe.resource_contract(original, "domain"), probe.resource_contract(changed, "domain"))
+        waf = policy()
+        before = probe.digest(probe.resource_contract(waf, "policy"))
+        waf["properties"]["policySettings"]["mode"] = "Detection"
+        self.assertNotEqual(before, probe.digest(probe.resource_contract(waf, "policy")))
+        # A field with a metadata-like name inside a custom rule must not be stripped.
+        nested = {"properties": {"customRules": {"rules": [{"systemData": {"synthetic": True}}]}}}
+        self.assertIn("systemData", probe.resource_contract(nested, "policy")["properties"]["customRules"]["rules"][0])
+
+    def test_semantic_collection_order_is_stable_and_component_drift_is_named(self):
+        first = {"id": "one", "properties": {"value": 1}}
+        second = {"id": "two", "properties": {"value": 2}}
+        self.assertEqual(probe.collection_contract([first, second], "origin"),
+                         probe.collection_contract([second, first], "origin"))
+        before, after = snapshot(), snapshot()
+        after["componentFingerprints"]["api.policy"] = probe.digest({"newMode": True})
+        with self.assertRaisesRegex(probe.VerificationError, "api.policy"):
+            probe.check_snapshot(before, after)
+        after = snapshot()
+        probe.check_snapshot(before, after)
+
+    def test_legacy_reports_are_not_silently_upgraded_after_raw_drift(self):
+        current = snapshot()
+        current["legacyFingerprint"] = "a" * 64
+        probe.check_snapshot({"fingerprint": "a" * 64}, current)
+        with self.assertRaisesRegex(probe.VerificationError, "Legacy raw"):
+            probe.check_snapshot({"fingerprint": "b" * 64}, current)
+        with self.assertRaisesRegex(probe.VerificationError, "Legacy raw"):
+            probe.check_snapshot({}, current)
+        inconsistent = snapshot()
+        inconsistent["componentFingerprints"]["api.policy"] = "changed"
+        with self.assertRaisesRegex(probe.VerificationError, "inconsistent"):
+            probe.check_snapshot(inconsistent, current)
 
     def test_verify_persists_only_bounded_rule_evidence_and_source_report_hash(self):
         with tempfile.TemporaryDirectory() as directory:

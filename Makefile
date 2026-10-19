@@ -3,6 +3,10 @@ SHELL := /usr/bin/env bash
 .PHONY: validate validate-stage4 validate-stage5 validate-stage6 validate-stage7 validate-stage8 validate-stage9 validate-local-execution validate-oss-callbacks test test-local test-local-full bicep kustomize
 
 .PHONY: validate-optional-l3
+.PHONY: validate-security-probes
+validate-security-probes:
+	./.venv/bin/python -m unittest tests.test_edge_security_probe tests.test_waf_security_probe
+
 validate-optional-l3:
 	npm test --prefix l3-audit
 	./.venv/bin/python -m unittest tests.test_optional_l3 tests.test_private_ingress tests.test_backend_manifest tests.test_local_release_report

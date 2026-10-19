@@ -247,6 +247,7 @@ config/migration-evidence.json
 !docs/litellm-ingress-tls-certificate-design-zh.md
 !docs/litellm-ingress-certificate-import-runbook-zh.md
 !docs/litellm-optional-l3-runbook-zh.md
+!docs/litellm-security-validation-runbook-zh.md
 !docs/customer-private-runner-preparation-zh.md
 !docs/customer-onsite-litellm-incident-runbook-zh.md
 

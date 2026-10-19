@@ -19,6 +19,7 @@ READMES = (
     "docs/litellm-ingress-tls-certificate-design-zh.md",
     "docs/litellm-ingress-certificate-import-runbook-zh.md",
     "docs/litellm-optional-l3-runbook-zh.md",
+    "docs/litellm-security-validation-runbook-zh.md",
     "docs/litellm-bom-cost-comparison-zh.md",
     "docs/litellm-azure-security-hardening-zh.md",
     "docs/customer-migration-guide-zh.md",
@@ -34,6 +35,20 @@ READMES = (
 
 
 class ProjectDocumentationTests(unittest.TestCase):
+    def test_security_validation_runbook_has_bounded_commands_and_explicit_evidence(self):
+        import subprocess
+        text = (ROOT / "docs/litellm-security-validation-runbook-zh.md").read_text()
+        self.assertIn("!docs/litellm-security-validation-runbook-zh.md",
+                      (ROOT / ".gitignore").read_text().splitlines())
+        for token in ("edge_security_probe", "waf_security_probe", "TrackingReference",
+                      "detection-match-only", "inconclusive", "--confirm-rate-limit-impact",
+                      "--configuration-only", "--sandbox read-only", "--request-budget 100"):
+            self.assertIn(token, text)
+        self.assertNotIn("--dangerously-bypass", text)
+        for source in re.findall(r"```bash\n(.*?)\n```", text, re.S):
+            result = subprocess.run(["bash", "-n"], input=source, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_optional_l3_runbook_is_opt_in_and_commands_are_valid(self):
         import subprocess
         text = (ROOT / "docs/litellm-optional-l3-runbook-zh.md").read_text()

@@ -96,6 +96,7 @@ def classification(case, status, blocked_page):
 
 def request_case(opener, origin, case, key=None):
     headers = {"Content-Type": "application/json", "User-Agent": "LLMGW-BoundedSecurityProbe/1.0"}
+    headers.update(case.get("headers", {}))
     if case.get("syntheticKey"):
         headers["Authorization"] = "Bearer sk-security-probe-intentionally-invalid"
     if case.get("realKey"):
@@ -119,7 +120,7 @@ def request_case(opener, origin, case, key=None):
             status = response.code
             body = response.read(8192)
             reference = response.headers.get("X-Azure-Ref", "")
-            if re.fullmatch(r"[A-Za-z0-9_-]{1,200}", reference):
+            if re.fullmatch(r"[A-Za-z0-9_+/=-]{1,200}", reference):
                 result["trackingReference"] = reference
             blocked_page = b"the request is blocked" in body.lower() and b"<" in body
             result.update(status=status, expectedStatusObserved=status in case["expected"],

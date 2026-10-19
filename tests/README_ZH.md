@@ -66,6 +66,11 @@ Front Door WAF只检查握手，不检查后续帧；预算、长连接撤销、
 
 ## 低频网络与边缘防护验证（不依赖 Codex）
 
+需要实际WAF配置、规则命中及日志证据时，使用新增的
+[waf_security_probe.py](waf_security_probe.py)；两份脚本、WSS及手动Codex的完整执行顺序见
+[安全验证runbook](../docs/litellm-security-validation-runbook-zh.md)。
+新工具默认不做限流、不调用模型或Codex，也不修改策略。
+
 [edge_security_probe.py](edge_security_probe.py) 使用 Python 3 标准库，适合在 laptop 上执行批准目标的低频验证。
 默认发送 9 个请求，加入 Admin 观察后为 11 个，加入合法推理基线后最多 12 个；
 串行请求间隔 2 秒、单次超时 15 秒，无并发、无重试，网络失败、429 或 5xx 时停止。

@@ -232,12 +232,13 @@ def availability_zones(config):
     return sorted(zones)
 
 
-def spread_across_zones(pod, zones):
+def spread_across_zones(pod, zones, selector=None):
     if not zones:
         return pod
-    hostname = next(item for item in pod["topologySpreadConstraints"] if item["topologyKey"] == "kubernetes.io/hostname")
+    if selector is None:
+        selector = next(item for item in pod["topologySpreadConstraints"] if item["topologyKey"] == "kubernetes.io/hostname")["labelSelector"]
     # Soft on purpose: a hard zone rule keeps replacement pods Pending while a failed zone's nodes are still registered.
-    pod["topologySpreadConstraints"].append({"maxSkew": 1, "topologyKey": "topology.kubernetes.io/zone", "whenUnsatisfiable": "ScheduleAnyway", "labelSelector": copy.deepcopy(hostname["labelSelector"])})
+    pod.setdefault("topologySpreadConstraints", []).append({"maxSkew": 1, "topologyKey": "topology.kubernetes.io/zone", "whenUnsatisfiable": "ScheduleAnyway", "labelSelector": copy.deepcopy(selector)})
     return pod
 
 

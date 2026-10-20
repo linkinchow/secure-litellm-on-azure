@@ -3,6 +3,7 @@ import { privateIPv4 } from './private-endpoints.js';
 
 export interface DeploymentSettings {
   image: string; clientId: string; storageUrl: string; dce: string; dcr: string; privateEndpointIps: string[];
+  zoneRedundant?: boolean;
 }
 export function render(settings: DeploymentSettings): object[] {
   for (const [field, pattern] of [
@@ -20,6 +21,10 @@ export function render(settings: DeploymentSettings): object[] {
     || !settings.privateEndpointIps.every(privateIPv4)) {
     throw new Error('Invalid L3 deployment field: privateEndpointIps; discover actual approved PE NIC private IPv4 addresses, not REPLACE placeholders');
   }
+  if (settings.zoneRedundant !== undefined && typeof settings.zoneRedundant !== 'boolean') {
+    throw new Error('Invalid L3 deployment field: zoneRedundant; use the optional-l3 deployment output');
+  }
+  const zoneRedundant = settings.zoneRedundant === true;
   const labels = { 'app.kubernetes.io/name': 'l3-audit' };
   const metadata = (name: string): object => ({ name, namespace: 'litellm', labels });
   const tcp = (port: number): object[] => [{ protocol: 'TCP', port }];
@@ -28,7 +33,12 @@ export function render(settings: DeploymentSettings): object[] {
     spec: { podSelector: { matchLabels: selector }, policyTypes: ['Ingress'],
       ingress: [{ from, ports: tcp(port) }] },
   });
+  // AKS ships no ZRS disk class; a zonal LRS spool would pin its replica to one zone.
+  const spoolClass = { apiVersion: 'storage.k8s.io/v1', kind: 'StorageClass', metadata: { name: 'l3-spool-zrs', labels },
+    provisioner: 'disk.csi.azure.com', parameters: { skuName: 'StandardSSD_ZRS' }, reclaimPolicy: 'Delete',
+    volumeBindingMode: 'WaitForFirstConsumer', allowVolumeExpansion: true };
   return [
+    ...(zoneRedundant ? [spoolClass] : []),
     { apiVersion: 'v1', kind: 'ServiceAccount', metadata: {
       ...metadata('l3-audit'), annotations: { 'azure.workload.identity/client-id': settings.clientId } } },
     { apiVersion: 'v1', kind: 'Service', metadata: metadata('l3-audit'), spec: {
@@ -41,7 +51,9 @@ export function render(settings: DeploymentSettings): object[] {
         securityContext: { runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001,
           seccompProfile: { type: 'RuntimeDefault' } },
         topologySpreadConstraints: [{ maxSkew: 1, topologyKey: 'kubernetes.io/hostname',
-          whenUnsatisfiable: 'ScheduleAnyway', labelSelector: { matchLabels: labels } }],
+          whenUnsatisfiable: 'ScheduleAnyway', labelSelector: { matchLabels: labels } },
+        ...(zoneRedundant ? [{ maxSkew: 1, topologyKey: 'topology.kubernetes.io/zone',
+          whenUnsatisfiable: 'ScheduleAnyway', labelSelector: { matchLabels: labels } }] : [])],
         containers: [{ name: 'l3-audit', image: settings.image,
           ports: [{ containerPort: 8080, name: 'http' }],
           env: [{ name: 'L3_STORAGE_URL', value: settings.storageUrl }, { name: 'L3_DCE_URL', value: settings.dce },
@@ -54,7 +66,7 @@ export function render(settings: DeploymentSettings): object[] {
         volumes: [{ name: 'tmp', emptyDir: { sizeLimit: '64Mi' } }],
       } },
       volumeClaimTemplates: [{ metadata: { name: 'spool' }, spec: {
-        accessModes: ['ReadWriteOnce'], storageClassName: 'managed-csi',
+        accessModes: ['ReadWriteOnce'], storageClassName: zoneRedundant ? 'l3-spool-zrs' : 'managed-csi',
         resources: { requests: { storage: '2Gi' } } } }],
     } },
     { apiVersion: 'policy/v1', kind: 'PodDisruptionBudget', metadata: metadata('l3-audit'),

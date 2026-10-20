@@ -6,13 +6,16 @@ import unittest
 from unittest.mock import patch
 
 from scripts.admin_credentials import OIDC_SECRET, SESSION_SECRET
+from scripts.audit_manifest import render_audit_documents
 from scripts.backend_manifest import render_backend_manifest
 from scripts.customer_migration import ROOT, MigrationError, validate_config
 from scripts.migration_deploy import deploy_component, group_id, inspect_zone_capacity
+from scripts.observability import COLLECTOR_DIGEST, render_observability
 from scripts.private_ingress import render_ingress
 from scripts.proxy_credentials import binding_contract, credential_bindings
 from scripts.proxy_manifest import render_proxy_documents
 from scripts.runtime_secrets import BACKEND_SECRETS
+from tests.test_audit_manifest import fixture
 from tests.test_backend_manifest import backend_customer
 from tests.test_customer_migration import customer_config
 from tests.test_proxy_config import APPS, proxy_customer
@@ -120,6 +123,22 @@ class AvailabilityZoneTests(unittest.TestCase):
                 self.assertEqual([item["topologyKey"] for item in regional[name]["topologySpreadConstraints"]], [HOST_KEY])
                 self.assertEqual([item["topologyKey"] for item in pod["topologySpreadConstraints"]], [HOST_KEY, ZONE_KEY])
                 self.assertEqual(pod["topologySpreadConstraints"][1]["labelSelector"], pod["topologySpreadConstraints"][0]["labelSelector"])
+
+    def test_telemetry_collector_spreads_across_zones(self):
+        receipt = {"identity": {"clientId": "88888888-8888-4888-8888-888888888888", "serviceAccountName": "otel-collector", "kubernetesNamespace": "litellm"}, "connectionString": "InstrumentationKey=55555555-5555-4555-8555-555555555555;IngestionEndpoint=https://westus-0.in.applicationinsights.azure.com/"}
+        for zones in ((), ("1", "2", "3")):
+            config, source, foundation, storage = fixture()
+            zonal(config, zones=zones)
+            config["observability"] = {"collectorImage": config["parameters"]["platform"]["containerRegistryName"] + ".azurecr.io/collector@" + COLLECTOR_DIGEST}
+            result = render_observability(config, render_audit_documents(config, source, foundation, storage, "10.30.8.0/24"), receipt, "10.30.8.0/24")
+            collector = next(item for item in result if item["kind"] == "Deployment" and item["metadata"]["name"] == "otel-collector")
+            constraints = collector["spec"]["template"]["spec"].get("topologySpreadConstraints", [])
+            with self.subTest(zones=zones):
+                self.assertEqual(collector["spec"]["replicas"], 2)
+                self.assertEqual([item["topologyKey"] for item in constraints], [ZONE_KEY] if zones else [])
+                if zones:
+                    self.assertEqual(constraints[0]["labelSelector"], collector["spec"]["selector"])
+                    self.assertEqual(constraints[0]["whenUnsatisfiable"], "ScheduleAnyway")
 
     def test_zone_capacity_requires_every_zone_for_each_node_size(self):
         config = zonal(customer_config())

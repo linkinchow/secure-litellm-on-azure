@@ -19,6 +19,8 @@ param privateDnsZonesToCreate array = []
 @description('Only zones without an equivalent link to this VNet.')
 param privateDnsZonesToLink array = []
 param workspaceAlreadyLinkedToMonitorScope bool = false
+@description('Zone-redundant content storage and spool disks; set true when the AKS node pools span availability zones. An existing LRS account needs a separate redundancy conversion.')
+param zoneRedundant bool = false
 
 var prefix = 'l3-${storageAccountName}'
 resource actionGroup 'Microsoft.Insights/actionGroups@2023-01-01' = {
@@ -70,7 +72,7 @@ resource account 'Microsoft.Storage/storageAccounts@2025-06-01' = {
   name: storageAccountName
   location: location
   kind: 'StorageV2'
-  sku: { name: 'Standard_LRS' }
+  sku: { name: zoneRedundant ? 'Standard_ZRS' : 'Standard_LRS' }
   properties: {
     minimumTlsVersion: 'TLS1_2'
     supportsHttpsTrafficOnly: true
@@ -319,6 +321,7 @@ output deploymentSettings object = {
   storageUrl: account.properties.primaryEndpoints.blob
   dce: dce.properties.logsIngestion.endpoint
   dcr: dcr.properties.immutableId
+  zoneRedundant: zoneRedundant
 }
 output workspaceId string = workspace.properties.customerId
 output privateEndpoints array = [blobPe.id, monitorPe.id]

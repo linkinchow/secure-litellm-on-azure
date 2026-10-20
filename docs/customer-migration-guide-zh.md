@@ -656,7 +656,7 @@ sha256sum "$SNAPSHOT_DIR/deployments-before.json" > "$SNAPSHOT_DIR/SHA256SUMS"
 
 **开始前：** Stage2已验收；准备deploy身份、ACR唯一名称、目标Workspace以及完整stage4Network/stage4Aks配置。Stage3只创建平台早期资源，不创建新PG，不关闭旧模型账号的访问路径；Stage4才建立私网连接。
 
-**可用区（可选）：** `stage4Aks.availabilityZones`省略或为空时行为不变，节点池不指定可用区。填写2到3个区域（如`["1","2","3"]`）时，system和user节点池都跨这些区域，`systemNodeCount`、`userNodeCount`及autoscaler最小节点数都不少于区域数。Stage4 platform plan先用`az vm list-skus --all`核对两种节点规格在每个所选区域可用且没有订阅限制，West US等没有可用区的区域会在plan阶段失败。LiteLLM后端、两个auth-proxy和两套Traefik另加按区域打散的软约束（ScheduleAnyway），后端HPA最少副本不低于区域数；用软约束是为了某个区域故障、其节点仍在集群中登记时，替换Pod仍能调度到其他区域。节点池的可用区创建后不能修改：已有集群改为跨区域须新建节点池并迁移工作负载，不能只改配置重新部署。本项只覆盖AKS，PostgreSQL区域冗余仍由`stage5Data.postgresqlHighAvailabilityMode`决定。
+**可用区（可选）：** `stage4Aks.availabilityZones`省略或为空时行为不变，节点池不指定可用区。填写2到3个区域（如`["1","2","3"]`）时，system和user节点池都跨这些区域，`systemNodeCount`、`userNodeCount`及autoscaler最小节点数都不少于区域数。Stage4 platform plan先用`az vm list-skus --all`核对两种节点规格在每个所选区域可用且没有订阅限制，West US等没有可用区的区域会在plan阶段失败。LiteLLM后端、两个auth-proxy和两套Traefik另加按区域打散的软约束（ScheduleAnyway），后端HPA最少副本不低于区域数；用软约束是为了某个区域故障、其节点仍在集群中登记时，替换Pod仍能调度到其他区域。节点池的可用区创建后不能修改，模板中的节点池名称也是固定的，因此不支持把已有集群原地改为跨区域：只改配置重新部署会在What-if中显示可用区变更、在部署时被AKS拒绝；手工替换节点池也会在下次部署时与模板冲突。已有环境需要跨区域时，按本指南的迁移流程新建目标环境。本项只覆盖AKS，PostgreSQL区域冗余仍由`stage5Data.postgresqlHighAvailabilityMode`决定。
 
 先运行`Check public source image`，只选main，没有environment/stage。核对`source-image-<run ID>`中的source-summary、SBOM及扫描结果；当前阻断策略为可修复CRITICAL，不是零漏洞或上游发布者签名证明。
 

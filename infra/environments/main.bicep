@@ -24,6 +24,7 @@ type stage4AksConfiguration = {
   systemNodeCount: int
   userNodeVmSize: string
   userNodeCount: int
+  availabilityZones: string[]?
 }
 
 type azureOpenAIConnection = {
@@ -259,6 +260,7 @@ module privateAks '../modules/private-aks/main.bicep' = if (deployStage4) {
     systemNodeCount: stage4Aks.systemNodeCount
     userNodeVmSize: stage4Aks.userNodeVmSize
     userNodeCount: stage4Aks.userNodeCount
+    availabilityZones: stage4Aks.?availabilityZones ?? []
     podCidr: stage4Network.podCidr
     serviceCidr: stage4Network.serviceCidr
     dnsServiceIp: stage4Network.dnsServiceIp

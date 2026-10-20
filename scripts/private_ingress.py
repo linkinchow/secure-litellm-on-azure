@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 import yaml
 
-from scripts.customer_migration import ROOT, require
+from scripts.customer_migration import ROOT, availability_zones, require, spread_across_zones
 from scripts.render_stage7_domain import domain_hosts
 
 
@@ -190,6 +190,7 @@ def render_ingress(config, plane, image, ranges):
         "volumes": [{"name": "dynamic", "configMap": {"name": name}}, {"name": "tls", "secret": {"secretName": name + "-tls", "defaultMode": 288}}, {"name": "tmp", "emptyDir": {"sizeLimit": "64Mi"}}],
         "topologySpreadConstraints": [{"maxSkew": 1, "topologyKey": "kubernetes.io/hostname", "whenUnsatisfiable": "DoNotSchedule", "labelSelector": {"matchLabels": labels}}],
     }
+    spread_across_zones(pod, availability_zones(config))
     return [
         {"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": name, "labels": {"pod-security.kubernetes.io/enforce": "restricted"}}},
         {"apiVersion": "v1", "kind": "ConfigMap", "metadata": metadata, "data": {"routes.yaml": yaml.safe_dump(dynamic, sort_keys=False)}},

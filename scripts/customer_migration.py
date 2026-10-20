@@ -2,6 +2,7 @@
 """Customer migration guidance and read-only previews; never deploy or cut over."""
 
 import argparse
+import copy
 import hashlib
 import ipaddress
 import json
@@ -222,6 +223,24 @@ def admin_source_cidrs(value):
     return sorted(networks)
 
 
+def availability_zones(config):
+    aks = config["parameters"].get("platform", {}).get("stage4Aks", {})
+    zones = aks.get("availabilityZones", [])
+    require(isinstance(zones, list) and all(isinstance(zone, str) for zone in zones) and set(zones) <= {"1", "2", "3"} and len(set(zones)) == len(zones) and len(zones) != 1, "AKS availability zones must be empty or two to three unique zones from 1, 2 and 3")
+    if zones:
+        require(all(isinstance(aks.get(key), int) and aks[key] >= len(zones) for key in ("systemNodeCount", "userNodeCount")), "Zonal AKS pools need at least one initial node per availability zone")
+    return sorted(zones)
+
+
+def spread_across_zones(pod, zones):
+    if not zones:
+        return pod
+    hostname = next(item for item in pod["topologySpreadConstraints"] if item["topologyKey"] == "kubernetes.io/hostname")
+    # Soft on purpose: a hard zone rule keeps replacement pods Pending while a failed zone's nodes are still registered.
+    pod["topologySpreadConstraints"].append({"maxSkew": 1, "topologyKey": "topology.kubernetes.io/zone", "whenUnsatisfiable": "ScheduleAnyway", "labelSelector": copy.deepcopy(hostname["labelSelector"])})
+    return pod
+
+
 def front_door_private_link_location(value):
     require(
         isinstance(value, str) and value in FRONT_DOOR_PRIVATE_LINK_LOCATIONS,
@@ -304,6 +323,7 @@ def validate_config(config, environment):
     for component, parameters in config["parameters"].items():
         require(isinstance(parameters, dict) and not set(parameters) - COMPONENTS[component][2], "Unknown or reserved component parameter")
         require(mode != "greenfield" or component not in {"monitoring", "legacy-logging"}, "Legacy monitoring components do not apply to greenfield")
+    availability_zones(config)
     edge = config["parameters"].get("edge")
     if edge is not None and "adminAllowedCidrs" in edge and configured(edge["adminAllowedCidrs"]):
         admin_source_cidrs(edge["adminAllowedCidrs"])

@@ -10,8 +10,8 @@ import re
 import subprocess
 
 from scripts.customer_migration import (
-    COMPONENTS, ROOT, MigrationError, active_stages, approval_policy, configured, fingerprint, prepare,
-    private_write, require, stage_fingerprint, validate_config, validate_evidence,
+    COMPONENTS, ROOT, MigrationError, active_stages, approval_policy, availability_zones, configured, fingerprint,
+    prepare, private_write, require, stage_fingerprint, validate_config, validate_evidence,
 )
 from scripts.workflow_diagnostics import command_failure_summary, command_name, diagnostic_exit
 
@@ -115,6 +115,23 @@ class AzureCommands:
 
     def scoped_allow_empty(self, arguments):
         return self.run_allow_empty([*arguments, "--subscription", self.config["azure"]["subscriptionId"]])
+
+
+def inspect_zone_capacity(config, azure):
+    zones = availability_zones(config)
+    aks = config["parameters"]["platform"]["stage4Aks"]
+    location = config["location"]
+    for size in sorted({aks["systemNodeVmSize"], aks["userNodeVmSize"]}):
+        offers = azure.scoped(["vm", "list-skus", "--location", location, "--resource-type", "virtualMachines", "--size", size, "--all"])
+        sku = next((item for item in offers if item.get("name", "").lower() == size.lower()), None)
+        require(sku is not None, f"VM size {size} is not offered in {location}")
+        offered = {zone for info in sku.get("locationInfo", []) for zone in info.get("zones") or []}
+        require(offered, f"{location} offers no availability zones for {size}; remove stage4Aks.availabilityZones or choose a zonal region")
+        for restriction in sku.get("restrictions") or []:
+            require(restriction.get("type") != "Location", f"VM size {size} is restricted for this subscription in {location}")
+            offered -= set((restriction.get("restrictionInfo") or {}).get("zones") or [])
+        missing = sorted(set(zones) - offered)
+        require(not missing, f"VM size {size} is unavailable to this subscription in zones {', '.join(missing)} of {location}")
 
 
 def resolve_origin(config, component, azure):
@@ -334,6 +351,8 @@ def deploy_component(config, stage, component, revision, operation, previous, di
     azure = azure or AzureCommands(config, directory)
     context = azure.run(["account", "show", "--query", "{tenantId:tenantId,id:id}"])
     require(context == {"tenantId": config["azure"]["tenantId"], "id": config["azure"]["subscriptionId"]}, "Azure login scope does not match customer configuration")
+    if component == "platform" and stage >= 4 and availability_zones(config):
+        inspect_zone_capacity(config, azure)
     connectivity = None
     if component == "certificate-vault":
         from scripts.certificate_vault import inspect_certificate_infrastructure

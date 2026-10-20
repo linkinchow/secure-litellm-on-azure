@@ -34,6 +34,9 @@ param systemNodeCount int = 2
 @description('Initial user pool node count.')
 param userNodeCount int = 2
 
+@description('Availability zones for both node pools. Empty keeps regional placement; zones cannot be changed after a pool is created.')
+param availabilityZones string[] = []
+
 @description('AKS pod CIDR for Azure CNI Overlay.')
 param podCidr string = '10.244.0.0/16'
 
@@ -45,6 +48,9 @@ param dnsServiceIp string = '10.31.0.10'
 
 @description('Resource tags.')
 param tags object = {}
+
+var poolZones = empty(availabilityZones) ? null : availabilityZones
+var minimumNodeCount = max(2, length(availabilityZones))
 
 resource cluster 'Microsoft.ContainerService/managedClusters@2025-01-01' = {
   name: name
@@ -84,8 +90,9 @@ resource cluster 'Microsoft.ContainerService/managedClusters@2025-01-01' = {
         osType: 'Linux'
         osSKU: 'AzureLinux'
         enableAutoScaling: true
-        minCount: 2
+        minCount: minimumNodeCount
         maxCount: 4
+        availabilityZones: poolZones
         enableNodePublicIP: false
         maxPods: 50
         vnetSubnetID: systemSubnetId
@@ -176,8 +183,9 @@ resource userPool 'Microsoft.ContainerService/managedClusters/agentPools@2025-01
     osType: 'Linux'
     osSKU: 'AzureLinux'
     enableAutoScaling: true
-    minCount: 2
+    minCount: minimumNodeCount
     maxCount: 6
+    availabilityZones: poolZones
     enableNodePublicIP: false
     maxPods: 50
     vnetSubnetID: userSubnetId

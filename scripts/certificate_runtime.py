@@ -230,9 +230,13 @@ def certificate_operation(config, operation, revision, directory, approved):
             require(vault.get_secret(settings["secretName"], saved.properties.version).value == pem, "Certificate write could not be confirmed")
             from scripts.app_gateway import is_app_gateway
             if is_app_gateway(config):
-                # The Application Gateway listener follows the versionless PKCS#12 copy.
-                from scripts.certificate_pfx import write_pfx
-                write_pfx(vault, settings["secretName"], pem, settings["host"], saved.properties.version)
+                # The Application Gateway listener follows the versionless PKCS#12 copy in the gateway Vault.
+                from scripts.certificate_pfx import gateway_vault_client, write_pfx
+                gateway_vault = gateway_vault_client(config, credential)
+                try:
+                    write_pfx(gateway_vault, settings["secretName"], pem, settings["host"], saved.properties.version)
+                finally:
+                    gateway_vault.close()
             summary.update(applied=True, secretId=saved.id, certificateSha256=material["sha256"], expiresAt=material["expiresAt"], ingressUpdated=False)
         private_write(directory / "runtime-summary.json", json.dumps(summary, indent=2))
         print(json.dumps(summary))

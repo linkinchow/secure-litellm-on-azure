@@ -484,7 +484,7 @@ def parameters_for(config, stage, component):
     elif app_gateway:
         from scripts.app_gateway import template_parameters
         # Deployment-time values added by migration_deploy.resolve_origin, not customer settings.
-        resolved = {key: parameters[key] for key in ("backendAddresses", "networkIsolation") if key in parameters}
+        resolved = {key: parameters[key] for key in ("backendAddresses", "networkIsolation", "deployGateway") if key in parameters}
         unresolved = copy.deepcopy(config)
         for key in resolved:
             unresolved["parameters"]["edge"].pop(key)

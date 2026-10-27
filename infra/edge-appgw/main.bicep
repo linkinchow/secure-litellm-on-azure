@@ -56,8 +56,20 @@ param networkIsolation bool = false
 @description('Private API/Admin ingress load balancer addresses from the verified Stage 4 receipt.')
 param backendAddresses object = { api: '', admin: '' }
 
-@description('Certificate Vault that holds the PKCS#12 copies of the ingress certificates.')
-param certificateVaultName string = 'kvcert-example'
+@description('Gateway-only Vault for the PKCS#12 copies of the ingress certificates. Application Gateway reads listener certificates through the trusted-services path, so this Vault allows it while the PEM certificate Vault keeps bypass None.')
+param gatewayVaultName string = 'kvagw-test-example'
+
+@description('Existing private endpoint subnet for the gateway Vault.')
+param privateEndpointSubnetName string = 'snet-private-endpoints'
+
+@description('Approved certificate importer (same principal as the certificate Vault) that writes the PKCS#12 copies.')
+param certificateWriterPrincipalId string = '00000000-0000-0000-0000-000000000000'
+
+@allowed(['User', 'Group', 'ServicePrincipal'])
+param certificateWriterPrincipalType string = 'Group'
+
+@description('Create the gateway itself. Preparation first creates the Vault, then stage9-edge-certificates writes the listener certificates, then the gateway is created.')
+param deployGateway bool = false
 
 param apiCertificateSecretName string = 'api-tls-pfx'
 
@@ -105,6 +117,9 @@ var zones = empty(availabilityZones) ? null : availabilityZones
 // The WAF flattens JSON bodies into argument names such as messages.content.
 var promptFields = ['messages', 'system', 'input', 'instructions', 'prompt']
 var secretsUserRole = '4633458b-17de-408a-b874-0445c86b69e6'
+var secretsOfficerRole = 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
+var identityId = resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', identityName)
+var gateway = deployEdge && deployGateway
 var scrubbingRules = [for variable in ['RequestHeaderNames', 'RequestCookieNames', 'RequestArgNames', 'RequestPostArgNames', 'RequestJSONArgNames']: {
   matchVariable: variable
   selectorMatchOperator: 'EqualsAny'
@@ -133,18 +148,13 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' existing = {
   name: virtualNetworkName
 }
 
-resource vault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
-  name: certificateVaultName
+resource endpointSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' existing = {
+  parent: vnet
+  name: privateEndpointSubnetName
 }
 
-resource apiSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' existing = {
-  parent: vault
-  name: apiCertificateSecretName
-}
-
-resource adminSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' existing = {
-  parent: vault
-  name: adminCertificateSecretName
+resource vaultZone 'Microsoft.Network/privateDnsZones@2024-06-01' existing = {
+  name: 'privatelink.vaultcore.azure.net'
 }
 
 resource nsg 'Microsoft.Network/networkSecurityGroups@2024-05-01' = if (deployEdge) {
@@ -201,10 +211,43 @@ resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' 
   tags: tags
 }
 
-// Read access to the two PKCS#12 secrets only, not to the PEM or ACME state secrets.
-resource apiSecretReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployEdge) {
-  name: guid(apiSecret.id, resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', identityName), secretsUserRole)
-  scope: apiSecret
+// Holds only the PKCS#12 copies. Public access stays off; the trusted-services bypass is what lets
+// Application Gateway load listener certificates, and RBAC still limits who can read them.
+resource gatewayVault 'Microsoft.KeyVault/vaults@2023-07-01' = if (deployEdge) {
+  name: gatewayVaultName
+  location: location
+  tags: union(tags, { purpose: 'gateway-listener-certificates' })
+  properties: {
+    tenantId: subscription().tenantId
+    sku: { family: 'A', name: 'standard' }
+    enableRbacAuthorization: true
+    enablePurgeProtection: true
+    softDeleteRetentionInDays: 90
+    publicNetworkAccess: 'Disabled'
+    networkAcls: { bypass: 'AzureServices', defaultAction: 'Deny' }
+  }
+}
+
+resource vaultEndpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = if (deployEdge) {
+  name: 'pe-${gatewayVaultName}-vault'
+  location: location
+  tags: tags
+  properties: {
+    subnet: { id: endpointSubnet.id }
+    customNetworkInterfaceName: 'nic-pe-${gatewayVaultName}-vault'
+    privateLinkServiceConnections: [{ name: 'vault', properties: { privateLinkServiceId: gatewayVault.id, groupIds: ['vault'] } }]
+  }
+}
+
+resource vaultEndpointDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-05-01' = if (deployEdge) {
+  parent: vaultEndpoint
+  name: 'default'
+  properties: { privateDnsZoneConfigs: [{ name: 'vault', properties: { privateDnsZoneId: vaultZone.id } }] }
+}
+
+resource gatewayReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployEdge) {
+  name: guid(resourceId('Microsoft.KeyVault/vaults', gatewayVaultName), identityId, secretsUserRole)
+  scope: gatewayVault
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', secretsUserRole)
     principalId: identity!.properties.principalId
@@ -212,13 +255,23 @@ resource apiSecretReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
   }
 }
 
-resource adminSecretReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployEdge) {
-  name: guid(adminSecret.id, resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', identityName), secretsUserRole)
-  scope: adminSecret
+resource certificateWriter 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployEdge) {
+  name: guid(resourceId('Microsoft.KeyVault/vaults', gatewayVaultName), certificateWriterPrincipalId, secretsOfficerRole)
+  scope: gatewayVault
   properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', secretsUserRole)
-    principalId: identity!.properties.principalId
-    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', secretsOfficerRole)
+    principalId: certificateWriterPrincipalId
+    principalType: certificateWriterPrincipalType
+  }
+}
+
+resource vaultDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (deployEdge) {
+  scope: gatewayVault
+  name: 'send-key-vault-audit-to-log-analytics'
+  properties: {
+    workspaceId: workspace.id
+    logAnalyticsDestinationType: 'Dedicated'
+    logs: [{ category: 'AuditEvent', enabled: true }]
   }
 }
 
@@ -350,7 +403,7 @@ resource gateWaf 'Microsoft.Network/ApplicationGatewayWebApplicationFirewallPoli
   }
 }
 
-resource gateway 'Microsoft.Network/applicationGateways@2024-05-01' = if (deployEdge) {
+resource appGateway 'Microsoft.Network/applicationGateways@2024-05-01' = if (gateway) {
   name: gatewayName
   location: location
   tags: tags
@@ -372,7 +425,7 @@ resource gateway 'Microsoft.Network/applicationGateways@2024-05-01' = if (deploy
     // Versionless, so renewed certificates are picked up without redeploying.
     sslCertificates: [for plane in planes: {
       name: plane
-      properties: { keyVaultSecretId: 'https://${certificateVaultName}${environment().suffixes.keyvaultDns}/secrets/${plane == 'api' ? apiCertificateSecretName : adminCertificateSecretName}' }
+      properties: { keyVaultSecretId: 'https://${gatewayVaultName}${environment().suffixes.keyvaultDns}/secrets/${plane == 'api' ? apiCertificateSecretName : adminCertificateSecretName}' }
     }]
     frontendIPConfigurations: [{ name: 'public', properties: { publicIPAddress: { id: publicIp.id } } }]
     frontendPorts: [{ name: 'https', properties: { port: 443 } }]
@@ -478,11 +531,11 @@ resource gateway 'Microsoft.Network/applicationGateways@2024-05-01' = if (deploy
       }
     ]
   }
-  dependsOn: [apiSecretReader, adminSecretReader, apiWaf, adminWaf, gateWaf]
+  dependsOn: [gatewayReader, vaultEndpointDns, apiWaf, adminWaf, gateWaf]
 }
 
-resource diagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (deployEdge) {
-  scope: gateway
+resource diagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (gateway) {
+  scope: appGateway
   name: 'edge-security-and-health'
   properties: {
     workspaceId: workspace.id
@@ -494,13 +547,15 @@ resource diagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' 
 
 output edge object = {
   edgeType: 'applicationGateway'
-  provisioned: deployEdge
-  trafficEnabled: deployEdge && enableApiTraffic
-  apiTrafficEnabled: deployEdge && enableApiTraffic
-  adminTrafficEnabled: deployEdge && enableAdminTraffic
+  provisioned: gateway
+  vaultProvisioned: deployEdge
+  gatewayVaultName: gatewayVaultName
+  trafficEnabled: gateway && enableApiTraffic
+  apiTrafficEnabled: gateway && enableApiTraffic
+  adminTrafficEnabled: gateway && enableAdminTraffic
   apiHost: apiHost
   adminHost: adminHost
-  gatewayId: deployEdge ? gatewayId : ''
+  gatewayId: gateway ? gatewayId : ''
   publicIpId: deployEdge ? publicIpId : ''
   publicIpAddress: deployEdge ? publicIp!.properties.ipAddress : ''
   publicIpFqdn: deployEdge ? publicIp!.properties.dnsSettings.fqdn : ''

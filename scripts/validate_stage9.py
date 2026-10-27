@@ -120,10 +120,11 @@ def validate_templates(edge, origin):
 
 
 def validate_app_gateway_template(template):
-    for parameter in ("deployEdge", "enableApiTraffic", "enableAdminTraffic", "networkIsolation", "wafExcludePromptFields"):
+    for parameter in ("deployEdge", "deployGateway", "enableApiTraffic", "enableAdminTraffic", "networkIsolation", "wafExcludePromptFields"):
         assert template["parameters"][parameter]["defaultValue"] is False
     assert template["parameters"]["wafMode"]["defaultValue"] == "Detection"
-    managed = [item for item in resources(template) if item.get("condition") == "[parameters('deployEdge')]"]
+    assert template["variables"]["gateway"] == "[and(parameters('deployEdge'), parameters('deployGateway'))]"
+    managed = [item for item in resources(template) if item.get("condition") in {"[parameters('deployEdge')]", "[variables('gateway')]"}]
     counts = {}
     for item in managed:
         counts[item["type"]] = counts.get(item["type"], 0) + 1
@@ -135,8 +136,14 @@ def validate_app_gateway_template(template):
         "Microsoft.Authorization/roleAssignments": 2,
         "Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies": 3,
         "Microsoft.Network/applicationGateways": 1,
-        "Microsoft.Insights/diagnosticSettings": 1,
+        "Microsoft.Insights/diagnosticSettings": 2,
+        "Microsoft.KeyVault/vaults": 1,
+        "Microsoft.Network/privateEndpoints": 1,
+        "Microsoft.Network/privateEndpoints/privateDnsZoneGroups": 1,
     }, counts
+    assert sum(item["condition"] == "[variables('gateway')]" for item in managed) == 2
+    vault = next(item for item in managed if item["type"] == "Microsoft.KeyVault/vaults")["properties"]
+    assert vault["publicNetworkAccess"] == "Disabled" and vault["networkAcls"] == {"bypass": "AzureServices", "defaultAction": "Deny"} and vault["enableRbacAuthorization"] is True
     by_name = {item["name"]: item for item in managed}
     policies = {item["name"]: item["properties"] for item in managed if item["type"].endswith("FirewallPolicies")}
     api = policies["[variables('apiWafName')]"]

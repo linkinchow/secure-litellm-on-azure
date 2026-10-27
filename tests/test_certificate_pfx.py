@@ -68,32 +68,35 @@ class CertificatePfxTests(unittest.TestCase):
     def test_sync_writes_then_keeps_and_refuses_unmanaged_or_changed_secrets(self):
         config = app_gateway_customer()
         hosts = {plane: f"llm-{plane}.{config['baseDomain']}" for plane in ("api", "admin")}
-        vault = FakeVault({f"{plane}-tls": (certificate_pem(host), {}, "application/x-pem-file") for plane, host in hosts.items()})
+        source = FakeVault({f"{plane}-tls": (certificate_pem(host), {}, "application/x-pem-file") for plane, host in hosts.items()})
+        vault = FakeVault({})
+        vaults = lambda kind: source if kind == "source" else vault
         with tempfile.TemporaryDirectory(dir=ROOT / "temp") as folder:
             directory = Path(folder)
-            plan = sync_edge_certificates(config, "plan", "a" * 40, directory, "", vault_factory=lambda: vault)
+            plan = sync_edge_certificates(config, "plan", "a" * 40, directory, "", vault_factory=vaults)
             self.assertEqual(plan["operations"], {"api": "write", "admin": "write"})
             self.assertEqual(vault.writes, [])
             with self.assertRaisesRegex(MigrationError, "plan changed"):
-                sync_edge_certificates(config, "execute", "a" * 40, directory, "0" * 64, vault_factory=lambda: vault)
-            result = sync_edge_certificates(config, "execute", "a" * 40, directory, plan["planSha256"], vault_factory=lambda: vault)
+                sync_edge_certificates(config, "execute", "a" * 40, directory, "0" * 64, vault_factory=vaults)
+            result = sync_edge_certificates(config, "execute", "a" * 40, directory, plan["planSha256"], vault_factory=vaults)
+            self.assertEqual(source.writes, [])
             self.assertTrue(result["applied"])
             self.assertEqual(sorted(vault.writes), ["admin-tls-pfx", "api-tls-pfx"])
             stored = vault.get_secret("api-tls-pfx")
             self.assertEqual(stored.properties.content_type, "application/x-pkcs12")
             self.assertEqual(stored.properties.tags["managedBy"], MANAGED_BY)
             self.assertEqual(pfx_leaf_sha256(stored.value), result["certificates"]["api"]["sha256"])
-            again = sync_edge_certificates(config, "plan", "a" * 40, directory, "", vault_factory=lambda: vault)
+            again = sync_edge_certificates(config, "plan", "a" * 40, directory, "", vault_factory=vaults)
             self.assertEqual(again["operations"], {"api": "keep", "admin": "keep"})
-            vault.set_secret("api-tls", certificate_pem(hosts["api"]), "application/x-pem-file", {})
-            renewed = sync_edge_certificates(config, "plan", "a" * 40, directory, "", vault_factory=lambda: vault)
+            source.set_secret("api-tls", certificate_pem(hosts["api"]), "application/x-pem-file", {})
+            renewed = sync_edge_certificates(config, "plan", "a" * 40, directory, "", vault_factory=vaults)
             self.assertEqual(renewed["operations"], {"api": "write", "admin": "keep"})
-            vault.set_secret("api-tls", certificate_pem(hosts["api"]), "application/x-pem-file", {})
+            source.set_secret("api-tls", certificate_pem(hosts["api"]), "application/x-pem-file", {})
             with self.assertRaisesRegex(MigrationError, "plan changed|changed since the plan"):
-                sync_edge_certificates(config, "execute", "a" * 40, directory, renewed["planSha256"], vault_factory=lambda: vault)
+                sync_edge_certificates(config, "execute", "a" * 40, directory, renewed["planSha256"], vault_factory=vaults)
             vault.set_secret("admin-tls-pfx", "unmanaged", "application/x-pkcs12", {"managedBy": "someone-else"})
             with self.assertRaisesRegex(MigrationError, "not managed by this workflow"):
-                sync_edge_certificates(config, "plan", "a" * 40, directory, "", vault_factory=lambda: vault)
+                sync_edge_certificates(config, "plan", "a" * 40, directory, "", vault_factory=vaults)
 
 
 if __name__ == "__main__":

@@ -37,7 +37,7 @@ def pfx_secret_name(pem_secret_name):
 
 
 def write_pfx(vault, pem_secret_name, pem, host, source_version):
-    """Store the PKCS#12 copy next to its PEM secret and confirm the stored leaf certificate."""
+    """Store the PKCS#12 copy in the gateway Vault and confirm the stored leaf certificate."""
     value, sha256 = pfx_from_pem(pem, host)
     name = pfx_secret_name(pem_secret_name)
     saved = vault.set_secret(name, value, content_type="application/x-pkcs12", tags={"managedBy": MANAGED_BY, "hostname": host, "sha256": sha256, "sourceVersion": source_version})
@@ -45,8 +45,15 @@ def write_pfx(vault, pem_secret_name, pem, host, source_version):
     return saved
 
 
+def gateway_vault_client(config, credential):
+    from azure.keyvault.secrets import SecretClient
+    from scripts.app_gateway import gateway_vault_name
+    return SecretClient(f"https://{gateway_vault_name(config)}.vault.azure.net", credential, retry_total=0, logging_enable=False)
+
+
 def sync_edge_certificates(config, operation, revision, directory, approved, vault_factory=None):
-    from scripts.app_gateway import app_gateway_settings, certificate_secret_names
+    """Copy the PEM ingress certificates into the gateway Vault as PKCS#12; vault_factory(kind) serves tests."""
+    from scripts.app_gateway import app_gateway_settings, certificate_secret_names, gateway_vault_name
 
     require(operation in {"plan", "execute"}, "Invalid edge certificate operation")
     app_gateway_settings(config)
@@ -56,31 +63,32 @@ def sync_edge_certificates(config, operation, revision, directory, approved, vau
         from azure.identity import AzureCliCredential
         from azure.keyvault.secrets import SecretClient
         credential = AzureCliCredential(tenant_id=config["azure"]["tenantId"])
-        vault = SecretClient(f"https://{vault_name}.vault.azure.net", credential, retry_total=0, logging_enable=False)
+        source = SecretClient(f"https://{vault_name}.vault.azure.net", credential, retry_total=0, logging_enable=False)
+        vault = gateway_vault_client(config, credential)
     else:
-        credential, vault = None, vault_factory()
+        credential, source, vault = None, vault_factory("source"), vault_factory("gateway")
     try:
         from azure.core.exceptions import ResourceNotFoundError
 
-        def read(name):
+        def read(name, client=None):
             try:
-                return vault.get_secret(name)
+                return (client or vault).get_secret(name)
             except ResourceNotFoundError:
                 return None
 
         planes, sources = {}, {}
         for plane, target in certificate_secret_names().items():
             source_name = target.removesuffix("-pfx")
-            source = read(source_name)
-            require(source is not None and source.properties.enabled is not False, f"{plane} PEM certificate secret is missing or disabled")
-            material = certificate_material(source.value, hosts[plane])
+            pem = read(source_name, source)
+            require(pem is not None and pem.properties.enabled is not False, f"{plane} PEM certificate secret is missing or disabled")
+            material = certificate_material(pem.value, hosts[plane])
             current = read(target)
             tags = (current.properties.tags or {}) if current else {}
-            keep = current is not None and current.properties.enabled is not False and tags.get("sha256") == material["sha256"] and tags.get("sourceVersion") == source.properties.version
+            keep = current is not None and current.properties.enabled is not False and tags.get("sha256") == material["sha256"] and tags.get("sourceVersion") == pem.properties.version
             require(current is None or tags.get("managedBy") == MANAGED_BY, f"{plane} PKCS#12 secret is not managed by this workflow")
-            planes[plane] = {"pemSecret": source_name, "pemVersion": source.properties.version, "sha256": material["sha256"], "expiresAt": material["expiresAt"], "pfxSecret": target, "pfxVersion": current.properties.version if current else None, "operation": "keep" if keep else "write"}
-            sources[plane] = source
-        plan = {"stage": 9, "action": "edge-certificates", "revision": revision, "configSha256": stage_fingerprint(config, 9), "vault": vault_name, "planes": planes}
+            planes[plane] = {"pemSecret": source_name, "pemVersion": pem.properties.version, "sha256": material["sha256"], "expiresAt": material["expiresAt"], "pfxSecret": target, "pfxVersion": current.properties.version if current else None, "operation": "keep" if keep else "write"}
+            sources[plane] = pem
+        plan = {"stage": 9, "action": "edge-certificates", "revision": revision, "configSha256": stage_fingerprint(config, 9), "vault": vault_name, "gatewayVault": gateway_vault_name(config), "planes": planes}
         summary = {"stage": 9, "action": "edge-certificates", "planSha256": fingerprint(plan), "applied": False, "stageAccepted": False, "operations": {plane: item["operation"] for plane, item in planes.items()}}
         private_write(directory / "runtime-review.json", json.dumps(plan, indent=2))
         private_write(directory / "runtime-summary.json", json.dumps(summary, indent=2))
@@ -92,7 +100,7 @@ def sync_edge_certificates(config, operation, revision, directory, approved, vau
             if item["operation"] == "keep":
                 continue
             current = read(item["pfxSecret"])
-            require((current.properties.version if current else None) == item["pfxVersion"] and read(item["pemSecret"]).properties.version == item["pemVersion"], f"{plane} certificate secrets changed since the plan")
+            require((current.properties.version if current else None) == item["pfxVersion"] and read(item["pemSecret"], source).properties.version == item["pemVersion"], f"{plane} certificate secrets changed since the plan")
             saved = write_pfx(vault, item["pemSecret"], sources[plane].value, hosts[plane], item["pemVersion"])
             item["pfxVersion"] = saved.properties.version
         summary.update(applied=True, certificates={plane: {"sha256": item["sha256"], "expiresAt": item["expiresAt"], "pfxVersion": item["pfxVersion"]} for plane, item in planes.items()})
@@ -100,6 +108,7 @@ def sync_edge_certificates(config, operation, revision, directory, approved, vau
         print(json.dumps(summary))
         return summary
     finally:
+        source.close()
         vault.close()
         if credential is not None:
             credential.close()

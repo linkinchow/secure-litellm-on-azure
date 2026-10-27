@@ -4,7 +4,7 @@ import ipaddress
 import re
 from uuid import UUID
 
-from scripts.customer_migration import configured, require
+from scripts.customer_migration import configured, fingerprint, require
 
 EDGE_TYPES = ("frontDoor", "applicationGateway")
 FRONT_DOOR_HEADER = "X-Azure-FDID"
@@ -15,6 +15,8 @@ APP_GATEWAY_ONLY = {"subnetName", "subnetPrefix", "availabilityZones", "minCapac
 FRONT_DOOR_ONLY = {"privateOrigin", "adminPrivateOrigin"}
 DEFAULTS = {"rateLimitPerMinute": 600, "adminRateLimitPerMinute": 120, "availabilityZones": ["1", "2", "3"], "minCapacity": 2, "maxCapacity": 10, "requestTimeoutSeconds": 900, "wafExcludePromptFields": False}
 SSL_POLICY = "AppGwSslPolicy20220101S"
+# Public IP names with domainNameLabelScope carry a hash label and, in some regions, a sysgen label.
+FQDN_PATTERN = r"[a-z0-9-]+(?:\.[a-z0-9]+)?\.{location}(?:\.sysgen)?\.cloudapp\.azure\.com"
 
 
 def edge_type(config):
@@ -32,9 +34,16 @@ def require_front_door_edge(config, feature):
     require(not is_app_gateway(config), f"{feature} is not supported for applicationGateway edge yet")
 
 
+def gateway_vault_name(config):
+    environment = config["environment"]
+    scope = f"/subscriptions/{config['azure']['subscriptionId']}/resourceGroups/{config['target']['resourceGroup']}".lower()
+    return f"kvagw-{environment}-" + fingerprint(scope)[:24 - len(environment) - 7]
+
+
 def names(config):
     environment = config["environment"]
     return {
+        "vault": gateway_vault_name(config),
         "gateway": f"agw-llm-{environment}", "publicIp": f"pip-agw-llm-{environment}",
         "identity": f"id-agw-llm-{environment}", "nsg": f"nsg-agw-llm-{environment}",
         "apiWaf": f"wafagw-llm-api-{environment}", "adminWaf": f"wafagw-llm-admin-{environment}",
@@ -118,9 +127,11 @@ def template_parameters(config):
         "virtualNetworkName": network["virtualNetworkName"], "subnetName": settings["subnetName"], "subnetPrefix": settings["subnetPrefix"],
         "availabilityZones": settings["availabilityZones"], "minCapacity": settings["minCapacity"], "maxCapacity": settings["maxCapacity"],
         "requestTimeoutSeconds": settings["requestTimeoutSeconds"], "wafExcludePromptFields": settings["wafExcludePromptFields"],
-        "certificateVaultName": config["parameters"]["certificate-vault"]["vaultName"],
+        "gatewayVaultName": gateway_vault_name(config), "privateEndpointSubnetName": network["privateEndpointSubnetName"],
+        "certificateWriterPrincipalId": config["parameters"]["certificate-vault"]["certificateImporterPrincipalId"],
+        "certificateWriterPrincipalType": config["parameters"]["certificate-vault"]["certificateImporterPrincipalType"],
         "apiCertificateSecretName": secrets["api"], "adminCertificateSecretName": secrets["admin"],
-        "backendAddresses": {"api": "", "admin": ""}, "networkIsolation": False,
+        "backendAddresses": {"api": "", "admin": ""}, "networkIsolation": False, "deployGateway": False,
     }
 
 
@@ -134,7 +145,11 @@ def resource_ids(config):
     resource = names(config)
     gateway = prefix + "Microsoft.Network/applicationGateways/" + resource["gateway"]
     network = config["parameters"]["platform"]["stage4Network"]["virtualNetworkName"]
+    vault = prefix + "Microsoft.KeyVault/vaults/" + resource["vault"]
+    endpoint = prefix + "Microsoft.Network/privateEndpoints/pe-" + resource["vault"] + "-vault"
     return {value.lower() for value in (
+        vault, vault + "/providers/Microsoft.Insights/diagnosticSettings/send-key-vault-audit-to-log-analytics",
+        endpoint, endpoint + "/privateDnsZoneGroups/default", prefix + "Microsoft.Network/networkInterfaces/nic-pe-" + resource["vault"] + "-vault",
         prefix + f"Microsoft.Network/virtualNetworks/{network}/subnets/{settings['subnetName']}",
         prefix + "Microsoft.Network/networkSecurityGroups/" + resource["nsg"],
         prefix + "Microsoft.Network/publicIPAddresses/" + resource["publicIp"],
@@ -149,12 +164,8 @@ def change_allowed(config, resource):
     resource = resource.lower()
     if resource in resource_ids(config):
         return True
-    vault = resource_prefix(config).lower() + "microsoft.keyvault/vaults/" + config["parameters"]["certificate-vault"]["vaultName"].lower()
-    for secret in certificate_secret_names().values():
-        assignment = vault + "/secrets/" + secret + "/providers/microsoft.authorization/roleassignments/"
-        if resource.startswith(assignment) and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", resource.removeprefix(assignment)):
-            return True
-    return False
+    assignment = resource_prefix(config).lower() + "microsoft.keyvault/vaults/" + names(config)["vault"] + "/providers/microsoft.authorization/roleassignments/"
+    return resource.startswith(assignment) and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", resource.removeprefix(assignment)) is not None
 
 
 def inspect_prerequisites(config, azure):
@@ -172,15 +183,19 @@ def inspect_prerequisites(config, azure):
             require(prefixes == [settings["subnetPrefix"]], "Existing Application Gateway subnet has a different prefix; subnet size cannot change in place")
             continue
         require(not any(value and subnet.overlaps(ipaddress.ip_network(value)) for value in prefixes), f"Application Gateway subnet overlaps deployed subnet {item.get('name')}")
-    vault_name = config["parameters"]["certificate-vault"]["vaultName"]
+    vault_name = names(config)["vault"]
     vault = resource_prefix(config) + "Microsoft.KeyVault/vaults/" + vault_name
-    for plane, secret in certificate_secret_names().items():
-        value = azure.scoped(["resource", "show", "--ids", vault + "/secrets/" + secret, "--api-version", "2023-07-01", "--query", "{contentType:properties.contentType,enabled:properties.attributes.enabled}"])
-        require(value.get("contentType") == "application/x-pkcs12" and value.get("enabled") is not False, f"Run stage9-edge-certificates first: {plane} PFX secret is missing or not PKCS#12")
+    existing = azure.scoped(["resource", "list", "--resource-group", group, "--resource-type", "Microsoft.KeyVault/vaults", "--query", f"[?name=='{vault_name}'].name"])
+    ready = False
+    if existing:
+        # The gateway is created only once stage9-edge-certificates has written both listener certificates.
+        secrets = azure.scoped(["resource", "list", "--resource-group", group, "--resource-type", "Microsoft.KeyVault/vaults/secrets", "--query", f"[?starts_with(name, '{vault_name}/')].{{name:name,contentType:properties.contentType}}"])
+        found = {item["name"].split("/", 1)[1]: item.get("contentType") for item in secrets or []}
+        ready = all(found.get(secret) == "application/x-pkcs12" for secret in certificate_secret_names().values())
     links = azure.scoped(["network", "private-dns", "link", "vnet", "list", "--resource-group", group, "--zone-name", "privatelink.vaultcore.azure.net", "--query", "[].virtualNetwork.id"])
     target = resource_prefix(config) + "Microsoft.Network/virtualNetworks/" + network
     require(any(str(value).lower() == target.lower() for value in links or []), "Application Gateway reads certificates over the Vault private endpoint; link the Vault private DNS zone to the target VNet")
-    return {"networkIsolation": feature == "Registered"}
+    return {"networkIsolation": feature == "Registered", "deployGateway": ready}
 
 
 def deployment_output(config, azure):
@@ -207,7 +222,7 @@ def deployed_app_gateway(config, azure):
     require(isinstance(identifier, str) and UUID(identifier).int != 0 and edge.get("edgeHeader") == APP_GATEWAY_HEADER, "Application Gateway edge identity output is invalid")
     from scripts.customer_migration import admin_source_cidrs
     require(edge.get("adminAllowedCidrs") == admin_source_cidrs(settings["adminAllowedCidrs"]), "Deployed Admin source-IP allowlist differs from the customer configuration")
-    require(re.fullmatch(r"[a-z0-9-]+\.[a-z0-9]+\.cloudapp\.azure\.com", edge.get("publicIpFqdn", "")) is not None, "Application Gateway public IP has no reviewed DNS name")
+    require(re.fullmatch(FQDN_PATTERN.format(location=re.escape(config["location"])), edge.get("publicIpFqdn", "")) is not None, "Application Gateway public IP has no reviewed DNS name")
     live = azure.scoped(["resource", "show", "--ids", gateway_id, "--api-version", "2024-05-01"])
     require(live.get("id", "").lower() == gateway_id.lower(), "Azure returned a different Application Gateway")
     properties = live.get("properties", {})
@@ -216,7 +231,7 @@ def deployed_app_gateway(config, azure):
     require(properties.get("sslPolicy", {}).get("policyName") == SSL_POLICY, "Application Gateway TLS policy differs from the reviewed contract")
     listeners = {item["name"]: item.get("properties", {}) for item in properties.get("httpListeners", [])}
     require(set(listeners) == {"api", "admin"}, "Application Gateway must expose exactly the API and Admin listeners")
-    vault = config["parameters"]["certificate-vault"]["vaultName"]
+    vault = resource["vault"]
     certificates = {item["name"]: item.get("properties", {}).get("keyVaultSecretId", "") for item in properties.get("sslCertificates", [])}
     for plane in ("api", "admin"):
         listener = listeners[plane]

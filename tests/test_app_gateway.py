@@ -8,7 +8,7 @@ from unittest.mock import Mock
 
 import yaml
 
-from scripts.app_gateway import APP_GATEWAY_HEADER, change_allowed, deployed_app_gateway, edge_type, names, require_front_door_edge, resource_ids
+from scripts.app_gateway import APP_GATEWAY_HEADER, change_allowed, deployed_app_gateway, edge_type, gateway_vault_name, names, require_front_door_edge, resource_ids
 from scripts.customer_migration import ROOT, MigrationError, parameters_for, stage_checks, stage_fingerprint, validate_config
 from scripts.migration_deploy import assert_change_scope, deploy_component, deployment_name, group_id, resolve_origin
 from scripts.private_ingress import FRONT_DOOR_HEADER, edge_header_bindings, preserve_native_edge_binding, render_ingress
@@ -47,7 +47,7 @@ def gateway_output(config, **changes):
         "apiHost": "llm-api." + config["baseDomain"], "adminHost": "llm-admin." + config["baseDomain"],
         "gatewayId": prefix + "Microsoft.Network/applicationGateways/" + resource["gateway"],
         "publicIpId": prefix + "Microsoft.Network/publicIPAddresses/" + resource["publicIp"], "publicIpAddress": "20.1.2.3",
-        "publicIpFqdn": f"llm-test-gw-abc123.{config['location']}.cloudapp.azure.com", "edgeHeader": APP_GATEWAY_HEADER, "edgeId": EDGE_ID,
+        "publicIpFqdn": f"llm-test-gw.abc123def.{config['location']}.sysgen.cloudapp.azure.com", "edgeHeader": APP_GATEWAY_HEADER, "edgeId": EDGE_ID,
         **{key + "Id": prefix + "Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies/" + resource[key] for key in ("apiWaf", "adminWaf", "gateWaf")},
         "adminAccessMode": "SourceIpAllowlistAndNativeLogin", "adminAllowedCidrs": ["20.30.40.50/32"], "adminRateLimitPerMinute": 120,
         "rateLimitPerMinute": 600, "backendAddresses": {"api": "10.30.4.10", "admin": "10.30.4.11"}, "subnetPrefix": SUBNET,
@@ -64,7 +64,7 @@ def live_gateway(config, edge):
         "provisioningState": "Succeeded", "operationalState": "Running", "sku": {"tier": "WAF_v2"}, "enableHttp2": False,
         "globalConfiguration": {"enableRequestBuffering": True, "enableResponseBuffering": False}, "sslPolicy": {"policyName": "AppGwSslPolicy20220101S"},
         "httpListeners": [{"name": plane, "properties": {"protocol": "Https", "hostName": hosts[plane], "requireServerNameIndication": True, "firewallPolicy": {"id": policy[plane]}}} for plane in hosts],
-        "sslCertificates": [{"name": plane, "properties": {"keyVaultSecretId": f"https://{VAULT}.vault.azure.net/secrets/{plane}-tls-pfx"}} for plane in hosts],
+        "sslCertificates": [{"name": plane, "properties": {"keyVaultSecretId": f"https://{gateway_vault_name(config)}.vault.azure.net/secrets/{plane}-tls-pfx"}} for plane in hosts],
         "backendAddressPools": [{"name": "api", "properties": {"backendAddresses": [{"ipAddress": "10.30.4.10"}]}}, {"name": "admin", "properties": {"backendAddresses": [{"ipAddress": "10.30.4.11"}]}}, {"name": "deny", "properties": {"backendAddresses": []}}],
         "rewriteRuleSets": [{"name": "edge-identity", "properties": {"rewriteRules": [{"actionSet": {"requestHeaderConfigurations": [{"headerName": APP_GATEWAY_HEADER, "headerValue": edge["edgeId"]}]}}]}}],
         "urlPathMaps": [{"name": "api-paths", "properties": {"defaultBackendAddressPool": {"id": gateway + "/backendAddressPools/deny"}, "pathRules": [{"properties": {"paths": ["/chat/completions", "/v1/chat/completions", "/responses", "/v1/responses", "/embeddings", "/v1/embeddings"]}}]}}],
@@ -76,8 +76,8 @@ def admin_policy(cidrs):
 
 
 class FakeAzure:
-    def __init__(self, config, edge, gateway=None):
-        self.config, self.edge = config, edge
+    def __init__(self, config, edge, gateway=None, secrets=("api-tls-pfx", "admin-tls-pfx")):
+        self.config, self.edge, self.secrets = config, edge, secrets
         self.gateway = gateway or live_gateway(config, edge)
         self.calls = []
 
@@ -91,12 +91,15 @@ class FakeAzure:
             return "Registered"
         if arguments[:3] == ["network", "vnet", "show"]:
             return {"prefixes": ["10.30.0.0/16"], "subnets": [{"name": "snet-ingress", "prefix": "10.30.4.0/24"}, {"name": "snet-pe", "prefix": "10.30.8.0/24"}]}
+        if arguments[:2] == ["resource", "list"]:
+            vault = gateway_vault_name(self.config)
+            if arguments[arguments.index("--resource-type") + 1] == "Microsoft.KeyVault/vaults":
+                return [vault]
+            return [{"name": f"{vault}/{name}", "contentType": "application/x-pkcs12"} for name in self.secrets]
         if arguments[:3] == ["network", "private-dns", "link"]:
             return [group_id(self.config) + "/providers/Microsoft.Network/virtualNetworks/target-vnet"]
         if arguments[:2] == ["resource", "show"]:
             identifier = arguments[arguments.index("--ids") + 1]
-            if "/secrets/" in identifier:
-                return {"contentType": "application/x-pkcs12", "enabled": True}
             if identifier.lower() == self.edge["gatewayId"].lower():
                 return copy.deepcopy(self.gateway)
             if identifier == self.edge["adminWafId"]:
@@ -130,7 +133,11 @@ class AppGatewayConfigurationTests(unittest.TestCase):
         self.assertTrue(values["deployEdge"])
         self.assertFalse(values["enableApiTraffic"] or values["enableAdminTraffic"])
         self.assertEqual(values["wafMode"], "Detection")
-        self.assertEqual((values["certificateVaultName"], values["apiCertificateSecretName"], values["adminCertificateSecretName"]), (VAULT, "api-tls-pfx", "admin-tls-pfx"))
+        self.assertEqual((values["gatewayVaultName"], values["apiCertificateSecretName"], values["adminCertificateSecretName"]), (gateway_vault_name(config), "api-tls-pfx", "admin-tls-pfx"))
+        self.assertTrue(values["gatewayVaultName"].startswith("kvagw-test-") and len(values["gatewayVaultName"]) <= 24)
+        vault = config["parameters"]["certificate-vault"]
+        self.assertEqual((values["certificateWriterPrincipalId"], values["certificateWriterPrincipalType"], values["deployGateway"]), (vault["certificateImporterPrincipalId"], vault["certificateImporterPrincipalType"], False))
+        self.assertNotEqual(values["certificateWriterPrincipalId"], vault["ingressReaderPrincipalId"])
         self.assertEqual((values["subnetPrefix"], values["requestTimeoutSeconds"], values["availabilityZones"]), (SUBNET, 900, ["1", "2", "3"]))
         compiled = json.loads(subprocess.run(["az", "bicep", "build", "--file", str(template), "--stdout"], capture_output=True, text=True, check=True).stdout)
         declarations = compiled["parameters"]
@@ -171,11 +178,11 @@ class AppGatewayConfigurationTests(unittest.TestCase):
     def test_change_scope_allows_only_the_gateway_contract(self):
         config = app_gateway_customer()
         allowed = sorted(resource_ids(config))
-        assignment = group_id(config) + f"/providers/Microsoft.KeyVault/vaults/{VAULT}/secrets/api-tls-pfx/providers/Microsoft.Authorization/roleAssignments/" + EDGE_ID
+        assignment = group_id(config) + f"/providers/Microsoft.KeyVault/vaults/{gateway_vault_name(config)}/providers/Microsoft.Authorization/roleAssignments/" + EDGE_ID
         assert_change_scope(config, "edge", [{"changeType": "Create", "resourceId": item} for item in allowed] + [{"changeType": "Create", "resourceId": assignment}])
         self.assertTrue(change_allowed(config, assignment))
         for resource in (group_id(config) + "/providers/Microsoft.Network/virtualNetworks/target-vnet",
-                         group_id(config) + f"/providers/Microsoft.KeyVault/vaults/{VAULT}/secrets/api-tls/providers/Microsoft.Authorization/roleAssignments/" + EDGE_ID,
+                         group_id(config) + f"/providers/Microsoft.KeyVault/vaults/{VAULT}/providers/Microsoft.Authorization/roleAssignments/" + EDGE_ID,
                          group_id(config) + "/providers/Microsoft.Cdn/profiles/afd"):
             with self.subTest(resource=resource), self.assertRaisesRegex(MigrationError, "unapproved"):
                 assert_change_scope(config, "edge", [{"changeType": "Modify", "resourceId": resource}])
@@ -196,9 +203,13 @@ class AppGatewayConfigurationTests(unittest.TestCase):
         resolved = resolve_origin(config, "edge", azure)
         self.assertEqual(resolved["parameters"]["edge"]["backendAddresses"], {"api": "10.30.4.10", "admin": "10.30.4.11"})
         self.assertTrue(resolved["parameters"]["edge"]["networkIsolation"])
+        self.assertTrue(resolved["parameters"]["edge"]["deployGateway"])
         self.assertNotIn("backendAddresses", config["parameters"]["edge"])
         values = {key: item["value"] for key, item in parameters_for(resolved, 9, "edge")[1]["parameters"].items()}
-        self.assertEqual((values["backendAddresses"], values["networkIsolation"]), ({"api": "10.30.4.10", "admin": "10.30.4.11"}, True))
+        self.assertEqual((values["backendAddresses"], values["networkIsolation"], values["deployGateway"]), ({"api": "10.30.4.10", "admin": "10.30.4.11"}, True, True))
+        # Until stage9-edge-certificates has written both listener certificates, preparation creates the Vault but not the gateway.
+        first = resolve_origin(config, "edge", FakeAzure(config, gateway_output(config), secrets=("api-tls-pfx",)))
+        self.assertFalse(first["parameters"]["edge"]["deployGateway"])
 
 
 class AppGatewayRuntimeTests(unittest.TestCase):
@@ -321,7 +332,7 @@ class AppGatewayTemplateTests(unittest.TestCase):
         compiled = json.loads(subprocess.run(["az", "bicep", "build", "--file", str(ROOT / "infra/edge-appgw/main.bicep"), "--stdout"], capture_output=True, text=True, check=True).stdout)
         validate_app_gateway_template(compiled)
         broken = copy.deepcopy(compiled)
-        broken["resources"]["gateway"]["properties"]["enableHttp2"] = True
+        broken["resources"]["appGateway"]["properties"]["enableHttp2"] = True
         with self.assertRaises(AssertionError):
             validate_app_gateway_template(broken)
 

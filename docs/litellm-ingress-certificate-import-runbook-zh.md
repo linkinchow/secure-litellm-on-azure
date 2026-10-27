@@ -325,8 +325,9 @@ execute 成功后确认 `applied=true`、`verified=true`，实际两个私有入
 不能只用浏览器看到的 Front Door 托管证书证明源站已换证。
 
 公网入口使用 Application Gateway（`parameters.edge.type=applicationGateway`）时，网关监听器直接使用这两份证书的
-PKCS#12 副本 `api-tls-pfx`/`admin-tls-pfx`，浏览器看到的就是本次上传的证书。换证后在部署终端生成新副本，
-网关引用无版本 URI，会自动加载新版本（Azure 侧轮询存在延迟）：
+PKCS#12 副本 `api-tls-pfx`/`admin-tls-pfx`，浏览器看到的就是本次上传的证书。副本存放在 Stage9 创建的独立网关证书 Vault
+（`kvagw-<env>-<hash>`，允许受信任的 Microsoft 服务），本 Runbook 的证书 Vault 仍保持 `bypass=None`。
+换证后在部署终端生成新副本，网关引用无版本 URI，会自动加载新版本（Azure 侧轮询存在延迟）：
 
 ```bash
 .venv/bin/python -m local_execution --config "$CFG" \

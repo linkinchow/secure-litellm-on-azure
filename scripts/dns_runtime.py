@@ -79,8 +79,8 @@ def change_dns(config, action, operation, revision, directory, approved, *, clie
             edge = deployment_output(config, client.azure)
             if action == "dns-publish":
                 deployed_app_gateway(config, client.azure)
-        pattern = r"[a-z0-9-]+\." + re.escape(config["location"]) + r"\.cloudapp\.azure\.com"
-        require(re.fullmatch(pattern, edge.get("publicIpFqdn", "")) is not None, "DNS target must be the Application Gateway public IP DNS name in the target region")
+        from scripts.app_gateway import FQDN_PATTERN
+        require(re.fullmatch(FQDN_PATTERN.format(location=re.escape(config["location"])), edge.get("publicIpFqdn", "")) is not None, "DNS target must be the Application Gateway public IP DNS name in the target region")
         targets = {"api": edge["publicIpFqdn"], "admin": edge["publicIpFqdn"]}
     elif edge is None:
         output = client.azure.scoped(["deployment", "group", "show", "--resource-group", config["target"]["resourceGroup"], "--name", deployment_name(config, 9, "edge"), "--query", "{state:properties.provisioningState,edge:properties.outputs.edge.value}"])

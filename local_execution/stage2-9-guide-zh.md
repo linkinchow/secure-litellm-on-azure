@@ -1730,7 +1730,7 @@ az aks start --subscription "$SUBSCRIPTION_ID" \
 与Front Door路径的差异：
 
 - 子网：模板在目标VNet中创建专用子网（建议`/24`，不小于`/26`），挂专用NSG、不挂防火墙路由表；订阅已注册`EnableApplicationGatewayNetworkIsolation`时自动委派给`Microsoft.Network/applicationGateways`。该子网必须包含在**两个**`privateIngress.<plane>.allowedCidrs`中，否则配置校验失败；修改`allowedCidrs`会改变Stage4指纹，须先按Stage4起的标准链路重跑并在Front Door模式下确认入口正常，再切换入口类型。
-- 证书：监听器使用与Traefik相同的公有证书，另存为同一证书Vault中的PKCS#12密钥`api-tls-pfx`/`admin-tls-pfx`，网关托管身份只获这两个密钥的读取权限。`stage9-edge-certificates`从当前PEM生成或更新PFX；自动API证书续期在此模式下同时写入PFX。监听器引用无版本URI，续期后自动生效。
+- 证书：监听器使用与Traefik相同的公有证书，另存为PKCS#12密钥`api-tls-pfx`/`admin-tls-pfx`，放在模板新建的**网关证书Vault**（`kvagw-<env>-<hash>`）中。Application Gateway读取Key Vault证书必须走“允许受信任的Microsoft服务”例外，仅有私有端点不够；为了不放宽存PEM私钥和ACME账户的证书Vault（保持`bypass=None`），网关证书Vault单独设`bypass=AzureServices`，公网仍关闭、使用私有端点。网关托管身份在该Vault获Secrets User，证书导入人/组（`certificateImporterPrincipalId`）获Secrets Officer。`stage9-edge-certificates`从证书Vault读当前PEM、生成或更新网关证书Vault中的PFX；自动API证书续期在此模式下同时写入PFX。certificate配置使用的身份若不是导入人/组（例如operator UAMI），须另行在网关证书Vault上授予Key Vault Secrets Officer，与证书Vault的授权方式相同。监听器引用无版本URI，续期后自动生效。
 - 来源绑定：网关以重写规则覆盖请求头`X-LLMGW-Edge-Id`为部署输出`edgeId`，`stage9-edge-bind`把两个Traefik业务router的`X-Azure-FDID`绑定替换为该头；直接访问私有LB而不带正确值返回404。与FDID相同，该值只证明请求经过网关，不是密钥；网络准入仍由`allowedCidrs`控制。
 - 流量开关：监听器在禁流量时挂始终Prevention、全部拦截的闸门WAF策略；release后API监听器使用API策略（canary为Detection），Admin监听器使用固定Prevention、`RemoteAddr`白名单的Admin策略。API仅6个推理路径路由到后端，其余路径进入空后端池返回502。
 - 长连接：公网IP空闲超时30分钟、关闭HTTP/2（其前端空闲超时固定180秒）、关闭响应缓冲以逐条转发SSE。无数据等待的非流式请求最长约30分钟；Traefik与LiteLLM自身超时仍然生效。
@@ -1747,7 +1747,14 @@ az aks start --subscription "$SUBSCRIPTION_ID" \
   --values local_execution/stage-9-values.local.json --option app-gateway
 ```
 
-2. 生成监听器使用的PFX副本，执行身份使用certificate配置：
+2. 第一次`stage9-edge-prepare`：网关证书Vault中还没有两个PFX，准备阶段自动推导`deployGateway=false`，只创建网关证书Vault及其私有端点、角色分配、子网、NSG、公网IP、托管身份和三个WAF策略，不创建网关。plan前会只读检查子网冲突、网络隔离注册和`privatelink.vaultcore.azure.net`私网DNS链接。
+
+```bash
+.venv/bin/python -m local_execution   --config local_execution/customer.json   --step stage9-edge-prepare --operation plan
+.venv/bin/python -m local_execution   --config local_execution/customer.json   --step stage9-edge-prepare --operation execute   --approved-plan-sha256 "REPLACE_STAGE9_EDGE_PREPARE_PLAN_SHA256"
+```
+
+3. 生成监听器使用的PFX副本，执行身份使用certificate配置：
 
 ```bash
 .venv/bin/python -m local_execution \
@@ -1759,10 +1766,10 @@ az aks start --subscription "$SUBSCRIPTION_ID" \
   --approved-plan-sha256 "REPLACE_STAGE9_EDGE_CERTIFICATES_PLAN_SHA256"
 ```
 
-3. 以同一`stage9-edge-prepare`创建禁流量的网关。plan前会只读检查子网冲突、网络隔离注册、PFX密钥和Vault私网DNS链接；What-if只允许子网、NSG、公网IP、托管身份、三个WAF策略、网关、诊断设置和两条密钥级角色分配，Front Door资源不受影响。执行后核对网关Running、两个后端池Healthy，以及经网关访问返回403（闸门）。
-4. 维护窗口内执行`stage9-edge-bind`：plan中两个平面的`replacesEdgeHeader`为`X-Azure-FDID`表示从Front Door切换。执行后经Front Door的请求返回404，直到DNS切换完成。
-5. 生成发布报告并release（报告含`edgeType=applicationGateway`和`edgeId`，不含PLS和`frontDoorId`；检查项以`app_gateway_backend_health`、`admin_listener_isolation`替代Private Link项），再执行`stage9-dns-publish`。从批准私网验证时把`X-Azure-FDID`换成`X-LLMGW-Edge-Id`，取值来自`...-s9-edge-appgw`部署输出`edge.edgeId`。
-6. 回退到Front Door：在Application Gateway配置下执行`stage9-dns-rollback`恢复原CNAME，再以`stage9-edge-prepare`把监听器放回闸门；恢复Front Door配置（保留新增的`allowedCidrs`），重新执行`stage9-edge-bind`绑定回FDID。Application Gateway资源保留，删除须另立变更单。
+4. 第二次`stage9-edge-prepare`（同上命令）：两个PFX已存在，自动推导`deployGateway=true`，创建禁流量的网关及其诊断设置。What-if只允许网关证书Vault及其私有端点/诊断、子网、NSG、公网IP、托管身份、三个WAF策略、网关、网关诊断设置和网关证书Vault范围的两条角色分配，Front Door资源不受影响。执行后核对网关Running、两个后端池Healthy、监听器证书指纹与PEM一致，以及经网关访问返回403（闸门）。
+5. 维护窗口内执行`stage9-edge-bind`：plan中两个平面的`replacesEdgeHeader`为`X-Azure-FDID`表示从Front Door切换。执行后经Front Door的请求返回404，直到DNS切换完成。
+6. 生成发布报告并release（报告含`edgeType=applicationGateway`和`edgeId`，不含PLS和`frontDoorId`；检查项以`app_gateway_backend_health`、`admin_listener_isolation`替代Private Link项），再执行`stage9-dns-publish`。从批准私网验证时把`X-Azure-FDID`换成`X-LLMGW-Edge-Id`，取值来自`...-s9-edge-appgw`部署输出`edge.edgeId`。
+7. 回退到Front Door：在Application Gateway配置下执行`stage9-dns-rollback`恢复原CNAME，再以`stage9-edge-prepare`把监听器放回闸门；恢复Front Door配置（保留新增的`allowedCidrs`），重新执行`stage9-edge-bind`绑定回FDID。Application Gateway资源保留，删除须另立变更单。
 
 ## 9. 输出和现场收尾
 

@@ -372,6 +372,31 @@
           }
         }
       },
+      "applicationGatewayEdge": {
+        "customerConfig": {
+          "parameters": {
+            "edge": {
+              "type": "applicationGateway",
+              "subnetName": "snet-appgw",
+              "subnetPrefix": "10.30.5.0/24",
+              "availabilityZones": [
+                "1",
+                "2",
+                "3"
+              ],
+              "minCapacity": 2,
+              "maxCapacity": 10,
+              "requestTimeoutSeconds": 900,
+              "wafExcludePromptFields": false
+            }
+          }
+        },
+        "removeCustomerConfigPathsAfterMerge": [
+          "parameters.origin",
+          "parameters.edge.privateOrigin",
+          "parameters.edge.adminPrivateOrigin"
+        ]
+      },
       "localExecutionForPrepare": {
         "features": {
           "allowTrafficRelease": false

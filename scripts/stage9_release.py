@@ -63,6 +63,9 @@ def release_checks(config):
                 required.add("telemetry_disabled")
     if config.get("optionalL3Enabled") is True and phase != "prepare":
         required.update({"l3_protocol_capture", "l3_delivery_recovery", "l3_query_hold", "l3_alerts"})
+    if config.get("edgeType", "frontDoor") == "applicationGateway":
+        required.difference_update({"private_link_approval", "admin_private_origin_isolation"})
+        required.update({"app_gateway_backend_health", "admin_listener_isolation"})
     return required
 
 
@@ -76,13 +79,20 @@ def validate_release(config: dict, now: datetime | None = None, required_approve
         raise ValueError("Release authenticationMode must be entra or native")
     if config.get("environmentName") not in {"dev", "test", "prod"}:
         raise ValueError("Invalid environment")
-    origins = {"API": config.get("privateOrigin", {}), "Admin": config.get("adminPrivateOrigin", {})}
-    for plane, origin in origins.items():
-        if not PLS_ID.fullmatch(origin.get("privateLinkServiceId", "")):
-            raise ValueError(f"An explicit {plane} Private Link Service resource ID is required")
-        front_door_private_link_location(origin.get("privateLinkLocation"))
-    if origins["API"]["privateLinkServiceId"].lower() == origins["Admin"]["privateLinkServiceId"].lower():
-        raise ValueError("API and Admin releases require separate Private Link Services")
+    edge_type = config.get("edgeType", "frontDoor")
+    if edge_type not in {"frontDoor", "applicationGateway"}:
+        raise ValueError("Release edgeType must be frontDoor or applicationGateway")
+    if edge_type == "applicationGateway":
+        if {"privateOrigin", "adminPrivateOrigin", "frontDoorId"} & set(config):
+            raise ValueError("Application Gateway releases have no Private Link origins or Front Door ID")
+    else:
+        origins = {"API": config.get("privateOrigin", {}), "Admin": config.get("adminPrivateOrigin", {})}
+        for plane, origin in origins.items():
+            if not PLS_ID.fullmatch(origin.get("privateLinkServiceId", "")):
+                raise ValueError(f"An explicit {plane} Private Link Service resource ID is required")
+            front_door_private_link_location(origin.get("privateLinkLocation"))
+        if origins["API"]["privateLinkServiceId"].lower() == origins["Admin"]["privateLinkServiceId"].lower():
+            raise ValueError("API and Admin releases require separate Private Link Services")
     admin_source_cidrs(config.get("adminAllowedCidrs"))
     if not config.get("logAnalyticsWorkspaceName") or "REPLACE" in config["logAnalyticsWorkspaceName"]:
         raise ValueError("An explicit diagnostics workspace is required")
@@ -92,8 +102,9 @@ def validate_release(config: dict, now: datetime | None = None, required_approve
         raise ValueError("Invalid Admin rate limit")
     if config.get("wafMode") != ("Prevention" if phase == "production" else "Detection"):
         raise ValueError("Prepare/canary use Detection; production requires reviewed Prevention")
-    if phase != "prepare" and not UUID.fullmatch(config.get("frontDoorId", "")):
-        raise ValueError("Traffic requires the actual Front Door ID")
+    identity = "edgeId" if edge_type == "applicationGateway" else "frontDoorId"
+    if phase != "prepare" and not UUID.fullmatch(config.get(identity, "")):
+        raise ValueError("Traffic requires the actual Application Gateway edge ID" if identity == "edgeId" else "Traffic requires the actual Front Door ID")
     if not config.get("changeTicket") or "REPLACE" in config["changeTicket"]:
         raise ValueError("Approved change ticket required")
     owners = config.get("approvedBy", [])
@@ -142,6 +153,8 @@ def validate_what_if(result: dict) -> dict[str, int]:
 
 
 def generate(config: dict, output_dir: Path) -> None:
+    if config.get("edgeType", "frontDoor") != "frontDoor":
+        raise ValueError("Stage9 preview rendering is not supported for applicationGateway edge yet")
     validate_release(config)
     if config.get("auditMode", "l3") != "l3" or config.get("authenticationMode", "entra") != "entra":
         raise ValueError("Native release uses managed customer-runtime manifests, not the legacy Stage9 overlay")

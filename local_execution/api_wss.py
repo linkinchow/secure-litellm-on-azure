@@ -88,6 +88,8 @@ def update(config_path, operation, approved, change_ticket, approvers):
     require(operation in {"plan", "execute"}, "Unknown WSS update operation")
     require(not config_path.is_symlink(), "Customer configuration cannot be a symlink")
     config, settings = load_config(config_path)
+    from scripts.app_gateway import require_front_door_edge
+    require_front_door_edge(config, "The API WebSocket WAF update tool")
     require(application_authentication(config)["mode"] == "native",
             "This WSS contract is for native gateways; Entra proxy protocols require separate validation")
     require(settings["features"]["allowTrafficRelease"] is True, "Published-edge update requires traffic approval")

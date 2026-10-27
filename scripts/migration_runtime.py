@@ -419,6 +419,7 @@ def validate_action(config, stage, action):
     allowed_stages.update({action: {7} for action in ("admin-credentials-session-rotate", "admin-credentials-retire-expired")})
     allowed_stages["certificate-renew"] = {4}
     allowed_stages["edge-bind"] = {9}
+    allowed_stages["edge-certificates"] = {9}
     allowed_stages.update({action: {9} for action in ("dns-publish", "dns-rollback")})
     allowed_stages.update({action: {1} for action in ("legacy-access-restrict", "legacy-access-restore")})
     require(stage in active_stages(config), "Stage does not apply to the selected deployment mode")

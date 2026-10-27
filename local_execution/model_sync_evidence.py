@@ -62,6 +62,8 @@ def receipt(config, stage, component, output, azure):
 
 
 def observe(config, previous, proof, revision, authorization, kube, directory, azure):
+    from scripts.app_gateway import require_front_door_edge
+    require_front_door_edge(config, "Model sync edge evidence")
     require(config.get("application", {}).get("authentication", {}).get("mode") == "native",
             "Focused evidence refresh currently supports native private ingress only; Entra needs separate approved revalidation")
     identity = runtime.identity_context(config, azure)
@@ -132,6 +134,8 @@ def refresh(config_path, sync_output, operation, approved, ticket, approvers):
     require(operation in {"plan", "execute"}, "Operation must be plan or execute")
     protected_source(config_path, "Customer config")
     config, settings = load_config(config_path)
+    from scripts.app_gateway import require_front_door_edge
+    require_front_door_edge(config, "Model sync edge evidence")
     previous, proof, sync_digest = sync_proof(config_path, sync_output)
     proof["completedSyncPlanSha256"] = sync_digest
     revision, sources = reviewed_revision(), source_fingerprints()

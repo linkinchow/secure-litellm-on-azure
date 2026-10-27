@@ -46,7 +46,7 @@ jobs:
           mkdir -p temp
           python -m unittest tests.test_customer_migration tests.test_public_config
           python -m unittest tests.test_migration_deploy tests.test_migration_evidence tests.test_migration_runtime tests.test_migration_workflows
-          python -m unittest tests.test_availability_zones
+          python -m unittest tests.test_availability_zones tests.test_app_gateway tests.test_certificate_pfx
           python -m unittest tests.test_greenfield_runtime
           python -m unittest -b tests.test_delivery_paths tests.test_install_workflows tests.test_installation_readiness tests.test_runner_lifecycle tests.test_dns_runtime tests.test_gateway_checks
           python -m unittest -b tests.test_local_rehearsal tests.test_project_docs

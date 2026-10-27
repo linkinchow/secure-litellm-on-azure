@@ -27,6 +27,7 @@ OPTION_SPECS = {
     "observability": (8, "nativeAuditOptionalObservability", "section"),
     "enhanced-l3": (8, "enhancedL3Alternative", "section"),
     "azure-dns": (9, "optionalAzureDns", "section"),
+    "app-gateway": (9, "applicationGatewayEdge", "section"),
     "approved-release": (9, "localExecutionForApprovedRelease", "local"),
 }
 
@@ -64,6 +65,17 @@ def remove_keys(target, keys):
     require(isinstance(keys, list) and all(isinstance(key, str) and key for key in keys), "Fragment removal keys must be strings")
     for key in keys:
         target.pop(key, None)
+
+
+def remove_paths(target, paths):
+    require(isinstance(paths, list) and all(isinstance(path, str) and path for path in paths), "Fragment removal paths must be strings")
+    for path in paths:
+        *parents, leaf = path.split(".")
+        current = target
+        for key in parents:
+            current = current.get(key) if isinstance(current, dict) else None
+        if isinstance(current, dict):
+            current.pop(leaf, None)
 
 
 def derived_values(config):
@@ -146,6 +158,8 @@ def apply_section(config, section):
         remove_keys(config, section["removeCustomerConfigKeysBeforeMerge"])
     if "customerConfig" in section:
         deep_merge(config, section["customerConfig"])
+    if "removeCustomerConfigPathsAfterMerge" in section:
+        remove_paths(config, section["removeCustomerConfigPathsAfterMerge"])
     if "localExecutionMerge" in section:
         require(isinstance(config.get("localExecution"), dict), "Base configuration requires localExecution")
         deep_merge(config["localExecution"], section["localExecutionMerge"])

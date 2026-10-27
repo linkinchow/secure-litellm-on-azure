@@ -3,6 +3,7 @@
 import argparse
 import copy
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -21,6 +22,11 @@ def deployment_name(config, stage, component):
     if stage == 0 and component == "bootstrap":
         scope = fingerprint({"location": config["location"], "targetResourceGroup": config["target"]["resourceGroup"].lower()})[:8]
         return f"{base}-{scope}"
+    if stage == 9 and component in {"edge", "dns-checkpoint"}:
+        from scripts.app_gateway import is_app_gateway
+        # Separate records keep the Front Door deployment and DNS checkpoint intact for rollback.
+        if is_app_gateway(config):
+            return f"{base}-appgw"
     return base
 
 
@@ -46,6 +52,10 @@ def assert_change_scope(config, component, changes, connectivity=None):
         if component == "runner-target-connectivity":
             from scripts.runner_target_connectivity import target_connectivity_resource_ids
             require(resource in target_connectivity_resource_ids(config, connectivity), "Target connectivity plan attempts to modify an unapproved resource")
+            continue
+        if component == "edge" and config["parameters"]["edge"].get("type") == "applicationGateway":
+            from scripts.app_gateway import change_allowed
+            require(change_allowed(config, resource), "Application Gateway plan attempts to modify an unapproved resource")
             continue
         if component == "certificate-vault":
             from scripts.certificate_vault import certificate_resource_ids
@@ -152,6 +162,16 @@ def resolve_origin(config, component, azure):
                     require(isinstance(foundation.get(role), dict), "Redeploy audit-foundation to initialize the requested identity")
                     audit[key] = foundation[role]["principalId"]
         require(len({audit[role + "PrincipalId"].lower() for role in roles}) == len(roles), "Audit roles must be distinct service principals")
+    elif component == "edge" and config["parameters"]["edge"].get("type") == "applicationGateway":
+        from scripts.app_gateway import inspect_prerequisites
+        resolved["parameters"]["edge"].update(inspect_prerequisites(config, azure))
+        output = azure.scoped(["deployment", "group", "show", "--resource-group", config["target"]["resourceGroup"], "--name", deployment_name(config, 4, "private-ingress"), "--query", "{state:properties.provisioningState,ingress:properties.outputs.privateIngress.value}"])
+        ingress = output.get("ingress") or {}
+        require(output.get("state") == "Succeeded" and ingress.get("configSha256") == stage_fingerprint(config, 4), "Deploy and verify the current Stage 4 private ingress before the Application Gateway")
+        network = ipaddress.ip_network(config["parameters"]["platform"]["stage4Network"]["ingressSubnetPrefix"])
+        addresses = {plane: ingress.get(plane, {}).get("privateIpAddress") for plane in ("api", "admin")}
+        require(all(isinstance(address, str) and ipaddress.ip_address(address) in network for address in addresses.values()) and addresses["api"] != addresses["admin"], "Private ingress receipt lacks distinct API/Admin addresses in the ingress subnet")
+        resolved["parameters"]["edge"]["backendAddresses"] = addresses
     elif component == "edge":
         origins = {
             "api": resolved["parameters"]["edge"]["privateOrigin"],
@@ -320,10 +340,36 @@ def prepare_allowlist_template(config, edge, azure, directory, parameters):
     return directory / "template.json"
 
 
+def _app_gateway_release_checks(config, resolved, release, revision, azure, directory):
+    edge = resolved["parameters"]["edge"]
+    from scripts.customer_migration import admin_source_cidrs
+    require(release["adminAllowedCidrs"] == admin_source_cidrs(edge["adminAllowedCidrs"]), "Release Admin source-IP allowlist differs from the reviewed edge")
+    require(release["logAnalyticsWorkspaceName"] == edge["logAnalyticsWorkspaceName"] and release["rateLimitPerMinute"] == edge.get("rateLimitPerMinute", 600) and release["adminRateLimitPerMinute"] == edge.get("adminRateLimitPerMinute", 120), "Release logging/rate configuration mismatch")
+    from scripts.app_gateway import APP_GATEWAY_HEADER, deployment_output, require_backend_health
+    previous_edge = deployment_output(config, azure)
+    require(release.get("edgeId") == previous_edge.get("edgeId"), "Release edge identity differs from the provisioned Application Gateway")
+    if release["phase"] == "prepare":
+        return
+    from scripts.audit_runtime import AuditCluster
+    from scripts.edge_binding import require_edge_binding
+    from scripts.migration_runtime import connect_cluster
+    from scripts.private_ingress_runtime import require_private_ingress_backends
+    kube = connect_cluster(config, directory, legacy=False)
+    if kube[-2:] == ["--namespace", "litellm"]:
+        kube = kube[:-2]
+    binding_client = {plane: AuditCluster([*kube, "--namespace", f"llm-{plane}-ingress"], directory) for plane in ("api", "admin")}
+    require_edge_binding(config, revision, release["edgeId"], azure, binding_client)
+    require_private_ingress_backends(config, azure, edge_binding=(APP_GATEWAY_HEADER, release["edgeId"]))
+    require_backend_health(azure, previous_edge["gatewayId"])
+
+
 def deploy_component(config, stage, component, revision, operation, previous, directory, approved_plan="", azure=None, release=None, allowlist_baseline=None):
     require(operation in {"plan", "deploy"}, "Invalid deployment operation")
     require(component in COMPONENTS, "Unknown deployment component")
     require(re.fullmatch(r"[0-9a-f]{40}", revision or "") is not None, "Full reviewed Git revision required")
+    app_gateway = stage == 9 and component in {"edge", "origin"} and config["parameters"].get("edge", {}).get("type") == "applicationGateway"
+    require(not (app_gateway and component == "origin"), "stage9-origin applies only to edge.type=frontDoor; Application Gateway reaches the private ingress directly")
+    require(not (app_gateway and allowlist_baseline is not None), "Admin allowlist updates are not supported for applicationGateway edge yet")
     if allowlist_baseline is not None:
         require(operation == "plan" and stage == 9 and component == "edge" and release is not None,
                 "Allowlist baseline is only supported by the reviewed Stage9 edge plan")
@@ -388,6 +434,10 @@ def deploy_component(config, stage, component, revision, operation, previous, di
         require(len(release["approvedBy"]) == (1 if mode == "single-operator" else 2), "Release approval count differs from configured policy")
         require(release.get("revision") == revision and release.get("configSha256") == stage_fingerprint(config, 9), "Release must bind the reviewed code and stage configuration")
         require(release["environmentName"] == config["environment"] and release["baseDomain"] == config["baseDomain"], "Release environment/domain mismatch")
+        require(release.get("edgeType", "frontDoor") == ("applicationGateway" if app_gateway else "frontDoor"), "Release edge type differs from customer configuration")
+    if release is not None and app_gateway:
+        _app_gateway_release_checks(config, resolved, release, revision, azure, directory)
+    elif release is not None:
         require(release["privateOrigin"] == resolved["parameters"]["edge"]["privateOrigin"], "Release PLS differs from deployed origin")
         require(release["adminPrivateOrigin"] == resolved["parameters"]["edge"]["adminPrivateOrigin"], "Release Admin PLS differs from deployed origin")
         require(release["adminAllowedCidrs"] == resolved["parameters"]["edge"]["adminAllowedCidrs"], "Release Admin source-IP allowlist differs from the reviewed edge")
@@ -411,6 +461,7 @@ def deploy_component(config, stage, component, revision, operation, previous, di
             if expected_authentication == "native":
                 from scripts.private_ingress_runtime import require_private_ingress_backends
                 require_private_ingress_backends(allowlist_baseline or config, azure, front_door_id=release["frontDoorId"])
+    if release is not None:
         document = json.loads(path.read_text())
         document["parameters"]["enableApiTraffic"] = {"value": release["phase"] != "prepare"}
         document["parameters"]["enableAdminTraffic"] = {"value": release["phase"] != "prepare"}
@@ -472,6 +523,9 @@ def main():
     args = parser.parse_args()
     config = validate_config(json.loads(os.environ["CUSTOMER_CONFIG_JSON"]), args.environment)
     require(os.environ.get("AZURE_TENANT_ID") == config["azure"]["tenantId"] and os.environ.get("AZURE_SUBSCRIPTION_ID") == config["azure"]["subscriptionId"], "Configured Azure scope mismatch")
+    if args.stage == 9:
+        from scripts.app_gateway import require_front_door_edge
+        require_front_door_edge(config, "The GitHub Stage 9 deployment workflow")
     if args.operation == "deploy":
         require(os.environ.get("MIGRATION_CONFIRM_ENVIRONMENT") == args.environment, "Explicit environment confirmation required")
     from scripts.workflow_artifacts import approved_operation, load_evidence, write_operation_receipt

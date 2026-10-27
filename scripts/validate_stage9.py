@@ -8,7 +8,7 @@ from pathlib import Path
 import yaml
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts.api_protocol import api_method_rules
+from scripts.api_protocol import api_method_rules, app_gateway_api_method_rules
 
 API_PATHS = {"/chat/completions", "/v1/chat/completions", "/responses", "/v1/responses", "/embeddings", "/v1/embeddings"}
 
@@ -119,6 +119,49 @@ def validate_templates(edge, origin):
         assert f"parameters('{plane}LoadBalancer')" in frontend
 
 
+def validate_app_gateway_template(template):
+    for parameter in ("deployEdge", "enableApiTraffic", "enableAdminTraffic", "networkIsolation", "wafExcludePromptFields"):
+        assert template["parameters"][parameter]["defaultValue"] is False
+    assert template["parameters"]["wafMode"]["defaultValue"] == "Detection"
+    managed = [item for item in resources(template) if item.get("condition") == "[parameters('deployEdge')]"]
+    counts = {}
+    for item in managed:
+        counts[item["type"]] = counts.get(item["type"], 0) + 1
+    assert counts == {
+        "Microsoft.Network/networkSecurityGroups": 1,
+        "Microsoft.Network/virtualNetworks/subnets": 1,
+        "Microsoft.Network/publicIPAddresses": 1,
+        "Microsoft.ManagedIdentity/userAssignedIdentities": 1,
+        "Microsoft.Authorization/roleAssignments": 2,
+        "Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies": 3,
+        "Microsoft.Network/applicationGateways": 1,
+        "Microsoft.Insights/diagnosticSettings": 1,
+    }, counts
+    by_name = {item["name"]: item for item in managed}
+    policies = {item["name"]: item["properties"] for item in managed if item["type"].endswith("FirewallPolicies")}
+    api = policies["[variables('apiWafName')]"]
+    assert api["customRules"][:4] == app_gateway_api_method_rules()
+    assert api["customRules"][4]["ruleType"] == "RateLimitRule" and api["customRules"][4]["groupByUserSession"] == [{"groupByVariables": [{"variableName": "ClientAddr"}]}]
+    admin = policies["[variables('adminWafName')]"]
+    assert "'Prevention'" in admin["policySettings"]
+    assert [rule["name"] for rule in admin["customRules"]] == ["BlockUnapprovedAdminSources", "BlockUnsafeMethods", "RateLimitAdmin"]
+    assert admin["customRules"][0]["matchConditions"] == [{"matchVariables": [{"variableName": "RemoteAddr"}], "operator": "IPMatch", "negationConditon": True, "matchValues": "[parameters('adminAllowedCidrs')]"}]
+    gate = policies["[variables('gateWafName')]"]
+    assert [rule["name"] for rule in gate["customRules"]] == ["TrafficDisabled"] and gate["customRules"][0]["matchConditions"][0]["matchValues"] == ["0.0.0.0/0"]
+    gateway = by_name["[variables('gatewayName')]"]["properties"]
+    assert gateway["enableHttp2"] is False and gateway["globalConfiguration"] == {"enableRequestBuffering": True, "enableResponseBuffering": False}
+    assert gateway["sslPolicy"] == {"policyType": "Predefined", "policyName": "AppGwSslPolicy20220101S"}
+    assert gateway["firewallPolicy"] == {"id": "[variables('gateWafId')]"}
+    assert set(template["variables"]["apiPaths"]) == API_PATHS and template["variables"]["edgeHeader"] == "X-LLMGW-Edge-Id"
+    assert gateway["rewriteRuleSets"][0]["properties"]["rewriteRules"][0]["actionSet"]["requestHeaderConfigurations"] == [{"headerName": "[variables('edgeHeader')]", "headerValue": "[variables('edgeId')]"}]
+    path_map = gateway["urlPathMaps"][0]["properties"]
+    assert path_map["defaultBackendAddressPool"]["id"] == "[format('{0}/backendAddressPools/deny', variables('gatewayId'))]" and path_map["pathRules"][0]["properties"]["paths"] == "[variables('apiPaths')]"
+    subnet = by_name["[format('{0}/{1}', parameters('virtualNetworkName'), parameters('subnetName'))]"]["properties"]
+    assert "routeTable" not in subnet and "networkSecurityGroup" in subnet
+    public_ip = by_name["[format('pip-agw-llm-{0}', parameters('environmentName'))]"]["properties"]
+    assert public_ip["idleTimeoutInMinutes"] == 30 and public_ip["dnsSettings"]["domainNameLabelScope"] == "ResourceGroupReuse"
+
+
 def validate_manifests(documents):
     objects = {(item["kind"], item["metadata"]["name"]): item for item in documents}
     ingresses = [item for item in documents if item["kind"] == "Ingress"]
@@ -149,4 +192,6 @@ def validate_manifests(documents):
 if __name__ == "__main__":
     validate_templates(json.loads(Path(sys.argv[1]).read_text()), json.loads(Path(sys.argv[2]).read_text()))
     validate_manifests(list(yaml.safe_load_all(Path(sys.argv[3]).read_text())))
+    if len(sys.argv) > 4:
+        validate_app_gateway_template(json.loads(Path(sys.argv[4]).read_text()))
     print("Stage 9 compiled edge/PLS templates and isolated API/admin manifests passed.")

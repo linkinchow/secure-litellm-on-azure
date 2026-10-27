@@ -55,6 +55,8 @@ def refresh_binding(config, revision, directory, azure):
 def update(config_path, additions, ticket, approvers, operation, approved):
     require(not config_path.is_symlink(), "Customer configuration cannot be a symlink")
     config, settings = load_config(config_path)
+    from scripts.app_gateway import require_front_door_edge
+    require_front_door_edge(config, "The Admin allowlist update tool")
     require(config_path.resolve().is_relative_to(ROOT.resolve()),
             "Customer configuration must be inside the reviewed checkout")
     ignored = subprocess.run(

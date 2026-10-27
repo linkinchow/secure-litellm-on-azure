@@ -78,6 +78,7 @@ RUNTIME_STEPS = {
     "stage8-audit-pause": (8, "audit-pause"),
     "stage8-audit-recover": (8, "audit-recover"),
     "stage8-audit-resume": (8, "audit-resume"),
+    "stage9-edge-certificates": (9, "edge-certificates"),
     "stage9-edge-bind": (9, "edge-bind"),
     "stage9-dns-publish": (9, "dns-publish"),
     "stage9-dns-rollback": (9, "dns-rollback"),
@@ -176,7 +177,7 @@ def authentication_profile_for_step(step):
         action = RUNTIME_STEPS[step][1]
         if action == "database-roles":
             return "database"
-        if action == "certificate-renew":
+        if action in {"certificate-renew", "edge-certificates"}:
             return "certificate"
         if action in {"entra-apps", "admin-credentials", "admin-credentials-rotate", "admin-credentials-recover", "admin-credentials-session-rotate", "admin-credentials-retire-expired"}:
             return "entraBootstrap"
@@ -350,6 +351,9 @@ def invoke_runtime_action(config, revision, stage, action, operation, directory,
     if action == "certificate-renew":
         from scripts.certificate_runtime import certificate_operation
         return certificate_operation(config, operation, revision, directory, approved)
+    if action == "edge-certificates":
+        from scripts.certificate_pfx import sync_edge_certificates
+        return sync_edge_certificates(config, operation, revision, directory, approved)
     if action == "edge-bind":
         from scripts.edge_binding import bind_edge
         return bind_edge(config, operation, revision, directory, approved)

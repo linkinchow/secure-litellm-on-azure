@@ -197,6 +197,8 @@ def policy_checks(policy, plane, config):
 
 def snapshot(config, azure):
     """Resolve policies from live associations, never invent names from a suffix."""
+    from scripts.app_gateway import require_front_door_edge
+    require_front_door_edge(config, "The WAF security probe")
     subscription = config["azure"]["subscriptionId"]
     group = config["target"]["resourceGroup"]
     context = azure.run(["account", "show", "--query", "{id:id,tenantId:tenantId}"])

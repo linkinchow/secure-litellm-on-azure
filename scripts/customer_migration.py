@@ -54,7 +54,7 @@ COMPONENTS = {
     "proxy-foundation": (7, "proxy-foundation", set()),
     "audit": (8, "audit-storage", {"storageAccountName", "virtualNetworkName", "privateEndpointSubnetName", "logAnalyticsWorkspaceName", "cmkVaultName", "cmkKeyName", "writerPrincipalId", "readerPrincipalId", "retentionPrincipalId", "recoveryPrincipalId"}),
     "origin": (9, "edge-origin", {"privateLinkServiceName", "adminPrivateLinkServiceName", "virtualNetworkName", "ingressSubnetName", "apiLoadBalancer", "adminLoadBalancer"}),
-    "edge": (9, "edge", {"privateOrigin", "adminPrivateOrigin", "adminAllowedCidrs", "logAnalyticsWorkspaceName", "rateLimitPerMinute", "adminRateLimitPerMinute"}),
+    "edge": (9, "edge", {"type", "privateOrigin", "adminPrivateOrigin", "adminAllowedCidrs", "logAnalyticsWorkspaceName", "rateLimitPerMinute", "adminRateLimitPerMinute", "subnetName", "subnetPrefix", "availabilityZones", "minCapacity", "maxCapacity", "requestTimeoutSeconds", "wafExcludePromptFields"}),
 }
 REQUIRED = {
     "bootstrap": set(),
@@ -142,6 +142,8 @@ def stage_checks(stage, config):
     if stage == 8 and "l3Audit" in config:
         checks = ["native_spend_metadata", "l3_protocol_capture", "l3_delivery_recovery",
                   "l3_query_hold", "l3_alerts", "native_api_route_isolation"]
+    if stage == 9 and config.get("parameters", {}).get("edge", {}).get("type") == "applicationGateway":
+        checks[checks.index("origin_tls_private_link")] = "origin_tls_private_backend"
     if stage == 9 and approval_policy(config)[0] == "single-operator":
         checks[-1] = "single_operator_release"
     return checks
@@ -329,6 +331,9 @@ def validate_config(config, environment):
     if edge is not None and "adminAllowedCidrs" in edge and configured(edge["adminAllowedCidrs"]):
         admin_source_cidrs(edge["adminAllowedCidrs"])
     if edge is not None:
+        from scripts.app_gateway import validate_edge_type
+        validate_edge_type(config)
+    if edge is not None and edge.get("type", "frontDoor") == "frontDoor":
         for origin_name in ("privateOrigin", "adminPrivateOrigin"):
             origin = edge.get(origin_name)
             if isinstance(origin, dict) and configured(origin.get("privateLinkLocation")):
@@ -403,7 +408,11 @@ def parameters_for(config, stage, component):
     if component == "platform" and stage < 4:
         parameters.pop("azureOpenAIConnections", None)
         parameters.pop("stage4RoleAssignmentNaming", None)
-    require(REQUIRED[component].issubset(parameters) and configured(parameters), "Component configuration is missing or contains placeholders")
+    app_gateway = component == "edge" and parameters.get("type") == "applicationGateway"
+    if app_gateway:
+        from scripts.app_gateway import APP_GATEWAY_REQUIRED
+    required = APP_GATEWAY_REQUIRED if app_gateway else REQUIRED[component]
+    require(required.issubset(parameters) and configured(parameters), "Component configuration is missing or contains placeholders")
     if component == "bootstrap":
         logging = config["parameters"].get("backup", config["parameters"].get("platform", {}))
         workspace_name = parameters.get("logAnalyticsWorkspaceName") or logging.get("logAnalyticsWorkspaceName", "")
@@ -472,7 +481,18 @@ def parameters_for(config, stage, component):
         parameters["deployAuditStorage"] = True
     elif component == "origin":
         parameters["deployPrivateOrigin"] = True
+    elif app_gateway:
+        from scripts.app_gateway import template_parameters
+        # Deployment-time values added by migration_deploy.resolve_origin, not customer settings.
+        resolved = {key: parameters[key] for key in ("backendAddresses", "networkIsolation") if key in parameters}
+        unresolved = copy.deepcopy(config)
+        for key in resolved:
+            unresolved["parameters"]["edge"].pop(key)
+        parameters = {**template_parameters(unresolved), **resolved}
+        template = "edge-appgw"
+        parameters.update(deployEdge=True, enableApiTraffic=False, enableAdminTraffic=False, environmentName=config["environment"], baseDomain=config["baseDomain"], wafMode="Detection", location=config["location"])
     elif component == "edge":
+        parameters.pop("type", None)
         parameters["adminAllowedCidrs"] = admin_source_cidrs(parameters["adminAllowedCidrs"])
         for origin_name in ("privateOrigin", "adminPrivateOrigin"):
             parameters[origin_name]["privateLinkLocation"] = front_door_private_link_location(parameters[origin_name]["privateLinkLocation"])

@@ -20,7 +20,7 @@ import yaml
 from scripts.customer_migration import MigrationError, fingerprint, private_write, require, stage_fingerprint
 from scripts.migration_deploy import AzureCommands, deployment_name, group_id
 from scripts.migration_runtime import connect_cluster, run_command
-from scripts.private_ingress import certificate_material, ingress_image, ingress_settings, preserve_native_front_door_binding, render_ingress
+from scripts.private_ingress import certificate_material, ingress_image, ingress_settings, preserve_native_edge_binding, render_ingress
 from scripts.render_stage7_domain import domain_hosts
 from scripts.workflow_diagnostics import command_failure_summary
 
@@ -144,16 +144,21 @@ def promote_image(config, directory, azure, lock):
         authfile.unlink(missing_ok=True)
 
 
-def verify_endpoint(address, host, other_host, expected_sha256, *, native=False, plane=None, front_door_id=None):
-    require(front_door_id is None or native, "Front Door probes require native ingress")
+def verify_endpoint(address, host, other_host, expected_sha256, *, native=False, plane=None, front_door_id=None, edge_binding=None):
+    from scripts.private_ingress import EDGE_HEADERS, FRONT_DOOR_HEADER
+    require(front_door_id is None or edge_binding is None, "Pass either a Front Door ID or an edge binding")
     if front_door_id is not None:
-        require(isinstance(front_door_id, str)
+        edge_binding = (FRONT_DOOR_HEADER, front_door_id)
+    edge_header, front_door_id = edge_binding if edge_binding is not None else (FRONT_DOOR_HEADER, None)
+    require(front_door_id is None or native, "Front Door probes require native ingress" if edge_header == FRONT_DOOR_HEADER else "Edge identity probes require native ingress")
+    if front_door_id is not None:
+        require(edge_header in EDGE_HEADERS and isinstance(front_door_id, str)
                 and re.fullmatch(r"[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}", front_door_id)
-                and UUID(front_door_id).int != 0, "Invalid Front Door identity for ingress verification")
+                and UUID(front_door_id).int != 0, "Invalid Front Door identity for ingress verification" if edge_header == FRONT_DOOR_HEADER else "Invalid edge identity for ingress verification")
     context = ssl.create_default_context(cafile=certifi.where())
 
     def probe(method, path, request_host, statuses, identifier=None, body=b"", label="route"):
-        header = f"X-Azure-FDID: {identifier}\r\n" if identifier else ""
+        header = f"{edge_header}: {identifier}\r\n" if identifier else ""
         request = (f"{method} {path} HTTP/1.1\r\nHost: {request_host}\r\n{header}"
                    f"Connection: close\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\n\r\n")
         with socket.create_connection((address, 443), timeout=15) as connection:
@@ -179,8 +184,9 @@ def verify_endpoint(address, host, other_host, expected_sha256, *, native=False,
             wrong_id = "00000000-0000-0000-0000-000000000001"
             if UUID(front_door_id) == UUID(wrong_id):
                 wrong_id = "00000000-0000-0000-0000-000000000002"
-            probe(method, path, host, {404}, body=body, label="missing-FDID rejection")
-            probe(method, path, host, {404}, wrong_id, body, label="wrong-FDID rejection")
+            short = "FDID" if edge_header == FRONT_DOOR_HEADER else "edge-ID"
+            probe(method, path, host, {404}, body=body, label=f"missing-{short} rejection")
+            probe(method, path, host, {404}, wrong_id, body, label=f"wrong-{short} rejection")
             probe(method, path, host, {401, 403} if plane == "api" else {200},
                   front_door_id, body, label="bound route")
         elif plane == "admin":
@@ -251,7 +257,7 @@ def deployed_private_ingress(config, azure):
     return ingress
 
 
-def verify_native_ingress_routes(config, ingress, *, front_door_id=None):
+def verify_native_ingress_routes(config, ingress, *, front_door_id=None, edge_binding=None):
     require(ingress.get("authenticationMode") == "native" and ingress.get("backendRoutesVerified") is False, "Backend route verification applies only to the initial native private ingress")
     hosts = domain_hosts(config["baseDomain"])
     network = ipaddress.ip_network(config["parameters"]["platform"]["stage4Network"]["ingressSubnetPrefix"])
@@ -262,7 +268,7 @@ def verify_native_ingress_routes(config, ingress, *, front_door_id=None):
         require(isinstance(address, str) and ipaddress.ip_address(address) in network and re.fullmatch(r"[a-f0-9]{64}", certificate_sha256 or ""), "Stage 4 private ingress receipt is incomplete")
         addresses[plane] = address
         verify_endpoint(address, hosts[plane], hosts["admin" if plane == "api" else "api"], certificate_sha256,
-                        native=True, plane=plane, front_door_id=front_door_id)
+                        native=True, plane=plane, front_door_id=front_door_id, edge_binding=edge_binding)
     require(addresses["api"] != addresses["admin"], "API/admin must not share an ingress frontend")
     return ingress
 
@@ -286,7 +292,7 @@ def verify_private_ingress_backends(config, revision, directory, azure=None):
     return verification
 
 
-def require_private_ingress_backends(config, azure, *, front_door_id=None):
+def require_private_ingress_backends(config, azure, *, front_door_id=None, edge_binding=None):
     ingress = deployed_private_ingress(config, azure)
     result = azure.scoped(["deployment", "group", "show", "--resource-group", config["target"]["resourceGroup"], "--name", deployment_name(config, 6, "private-ingress-backend"), "--query", "{state:properties.provisioningState,verification:properties.outputs.privateIngressBackend.value}"])
     verification = result.get("verification", {})
@@ -296,7 +302,7 @@ def require_private_ingress_backends(config, azure, *, front_door_id=None):
         "backendRoutesVerified": True,
     }
     require(result.get("state") == "Succeeded" and re.fullmatch(r"[0-9a-f]{40}", verification.get("revision", "")) is not None and all(verification.get(key) == value for key, value in expected.items()), "Verify the current native private ingress against the Stage 6 backend before enabling traffic")
-    verify_native_ingress_routes(config, ingress, front_door_id=front_door_id)
+    verify_native_ingress_routes(config, ingress, front_door_id=front_door_id, edge_binding=edge_binding)
 
 
 def deploy_private_ingress(config, operation, revision, directory, approved):
@@ -328,7 +334,7 @@ def deploy_private_ingress(config, operation, revision, directory, approved):
         preserved_config_map = None
         if authentication_mode == "native":
             preserved_config_map = json.loads(run_command([*scoped, "get", "ConfigMap", namespace, "--ignore-not-found", "--show-managed-fields", "-o", "json"], directory, f"before-binding-{plane}-configmap") or "null")
-            documents = preserve_native_front_door_binding(config, documents, preserved_config_map)
+            documents = preserve_native_edge_binding(config, documents, preserved_config_map)
         current_service = None
         ordinary, handoffs[plane] = [], []
         for document in documents:

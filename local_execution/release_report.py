@@ -20,9 +20,15 @@ def generate_report(config, settings, revision, change_ticket, approvers, azure)
             and "contentAudit" in config, "Report generation requires native authentication and native audit")
     require(settings["features"]["allowTrafficRelease"] is True,
             "Review and apply approved-release configuration before generating the report")
-    resolved = resolve_origin(config, "edge", azure)
-    live = deployed_edge(resolved, azure)
-    parameters = resolved["parameters"]["edge"]
+    from scripts.app_gateway import deployed_app_gateway, is_app_gateway
+    app_gateway = is_app_gateway(config)
+    if app_gateway:
+        live = deployed_app_gateway(config, azure)
+        parameters = config["parameters"]["edge"]
+    else:
+        resolved = resolve_origin(config, "edge", azure)
+        live = deployed_edge(resolved, azure)
+        parameters = resolved["parameters"]["edge"]
     deployment = azure.scoped([
         "deployment", "group", "show", "--resource-group", config["target"]["resourceGroup"],
         "--name", deployment_name(config, 9, "edge"),
@@ -41,10 +47,9 @@ def generate_report(config, settings, revision, change_ticket, approvers, azure)
         "telemetryEnabled": "observability" in config,
         "environmentName": config["environment"],
         "baseDomain": config["baseDomain"],
-        "privateOrigin": live["privateOrigin"],
-        "adminPrivateOrigin": live["adminPrivateOrigin"],
-        "frontDoorId": live["frontDoorId"],
-        "adminAllowedCidrs": parameters["adminAllowedCidrs"],
+        **({"edgeType": "applicationGateway", "edgeId": live["edgeId"]} if app_gateway else {
+            "privateOrigin": live["privateOrigin"], "adminPrivateOrigin": live["adminPrivateOrigin"], "frontDoorId": live["frontDoorId"]}),
+        "adminAllowedCidrs": live["adminAllowedCidrs"] if app_gateway else parameters["adminAllowedCidrs"],
         "logAnalyticsWorkspaceName": parameters["logAnalyticsWorkspaceName"],
         "rateLimitPerMinute": parameters.get("rateLimitPerMinute", 600),
         "adminRateLimitPerMinute": parameters.get("adminRateLimitPerMinute", 120),

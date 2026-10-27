@@ -228,6 +228,11 @@ def certificate_operation(config, operation, revision, directory, approved):
             require((before.properties.version if before else None) == plan["currentVersion"], "API certificate changed during issuance; pending issued version retained")
             saved = vault.set_secret(settings["secretName"], pem, content_type="application/x-pem-file", tags={"managedBy": "llmgw-acme", "hostname": settings["host"], "sha256": material["sha256"]})
             require(vault.get_secret(settings["secretName"], saved.properties.version).value == pem, "Certificate write could not be confirmed")
+            from scripts.app_gateway import is_app_gateway
+            if is_app_gateway(config):
+                # The Application Gateway listener follows the versionless PKCS#12 copy.
+                from scripts.certificate_pfx import write_pfx
+                write_pfx(vault, settings["secretName"], pem, settings["host"], saved.properties.version)
             summary.update(applied=True, secretId=saved.id, certificateSha256=material["sha256"], expiresAt=material["expiresAt"], ingressUpdated=False)
         private_write(directory / "runtime-summary.json", json.dumps(summary, indent=2))
         print(json.dumps(summary))

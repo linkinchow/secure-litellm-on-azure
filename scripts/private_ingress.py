@@ -16,9 +16,18 @@ from scripts.render_stage7_domain import domain_hosts
 
 NATIVE_API_PATHS = ("/chat/completions", "/v1/chat/completions", "/responses", "/v1/responses", "/embeddings", "/v1/embeddings")
 NATIVE_WSS_PATHS = ("/responses", "/v1/responses")
+FRONT_DOOR_HEADER = "X-Azure-FDID"
+APP_GATEWAY_HEADER = "X-LLMGW-Edge-Id"
+# Header the private ingress requires from its public edge, and the pod annotation recording it.
+EDGE_HEADERS = {FRONT_DOOR_HEADER: "llmgw/front-door-id", APP_GATEWAY_HEADER: "llmgw/edge-id"}
+EDGE_BINDING = re.compile(r"HeaderRegexp\(`(X-Azure-FDID|X-LLMGW-Edge-Id)`,\s*`\(\?i\)\^([a-fA-F0-9-]+)\$`\)")
 
 
-def native_api_rule(host, front_door_id=None):
+def edge_header_bindings(rule):
+    return EDGE_BINDING.findall(rule or "")
+
+
+def native_api_rule(host, front_door_id=None, header=FRONT_DOOR_HEADER):
     path_rule = " || ".join(f"Path(`{path}`)" for path in NATIVE_API_PATHS)
     websocket_paths = " || ".join(f"Path(`{path}`)" for path in NATIVE_WSS_PATHS)
     websocket = (
@@ -28,14 +37,16 @@ def native_api_rule(host, front_door_id=None):
     )
     rule = f"Host(`{host}`) && ((Method(`POST`) && ({path_rule})) || ({websocket}))"
     if front_door_id is not None:
-        rule += f" && HeaderRegexp(`X-Azure-FDID`, `(?i)^{front_door_id}$`)"
+        require(header in EDGE_HEADERS, "Unknown edge identity header")
+        rule += f" && HeaderRegexp(`{header}`, `(?i)^{front_door_id}$`)"
     return rule
 
 
-def native_admin_rule(host, front_door_id=None):
+def native_admin_rule(host, front_door_id=None, header=FRONT_DOOR_HEADER):
     rule = f"Host(`{host}`)"
     if front_door_id is not None:
-        rule += f" && HeaderRegexp(`X-Azure-FDID`, `(?i)^{front_door_id}$`)"
+        require(header in EDGE_HEADERS, "Unknown edge identity header")
+        rule += f" && HeaderRegexp(`{header}`, `(?i)^{front_door_id}$`)"
     return rule
 
 
@@ -101,7 +112,7 @@ def source_ranges(values):
     return sorted(set(networks))
 
 
-def preserve_native_front_door_binding(config, documents, current_config_map):
+def preserve_native_edge_binding(config, documents, current_config_map):
     result = copy.deepcopy(documents)
     if not current_config_map:
         return result
@@ -111,23 +122,26 @@ def preserve_native_front_door_binding(config, documents, current_config_map):
     plane = match[1]
     current = yaml.safe_load(current_config_map.get("data", {}).get("routes.yaml", ""))
     current_rule = (current or {}).get("http", {}).get("routers", {}).get(plane, {}).get("rule", "")
-    matches = re.findall(r"HeaderRegexp\(`X-Azure-FDID`,\s*`\(\?i\)\^([a-fA-F0-9-]+)\$`\)", current_rule)
+    matches = edge_header_bindings(current_rule)
     require(len(matches) <= 1, "Existing native API ingress has ambiguous Front Door bindings")
     if not matches:
         return result
     from uuid import UUID
-    identifier = matches[0]
+    header, identifier = matches[0]
     require(UUID(identifier).int != 0, "Existing native API ingress has an invalid Front Door binding")
     deployment = next(item for item in result if item["kind"] == "Deployment")
     dynamic = yaml.safe_load(config_map["data"]["routes.yaml"])
-    require("X-Azure-FDID" not in dynamic["http"]["routers"][plane]["rule"], f"Rendered native {plane} ingress unexpectedly contains a Front Door binding")
+    require(not edge_header_bindings(dynamic["http"]["routers"][plane]["rule"]), f"Rendered native {plane} ingress unexpectedly contains a Front Door binding")
     rule = native_api_rule if plane == "api" else native_admin_rule
-    dynamic["http"]["routers"][plane]["rule"] = rule(domain_hosts(config["baseDomain"])[plane], identifier)
+    dynamic["http"]["routers"][plane]["rule"] = rule(domain_hosts(config["baseDomain"])[plane], identifier, header)
     config_map["data"]["routes.yaml"] = yaml.safe_dump(dynamic, sort_keys=False)
     annotations = deployment["spec"]["template"]["metadata"].setdefault("annotations", {})
-    annotations["llmgw/front-door-id"] = identifier
+    annotations[EDGE_HEADERS[header]] = identifier
     annotations["llmgw/routes-sha256"] = hashlib.sha256(json.dumps(dynamic, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return result
+
+
+preserve_native_front_door_binding = preserve_native_edge_binding
 
 
 def render_ingress(config, plane, image, ranges):

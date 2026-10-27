@@ -72,7 +72,17 @@ def change_dns(config, action, operation, revision, directory, approved, *, clie
     require(action in {"dns-publish", "dns-rollback"} and operation in {"plan", "execute"}, "Invalid DNS operation")
     client = client or DnsClient(config, directory)
     settings = dns_settings(config)
-    if edge is None:
+    from scripts.app_gateway import is_app_gateway
+    if is_app_gateway(config):
+        if edge is None:
+            from scripts.app_gateway import deployed_app_gateway, deployment_output
+            edge = deployment_output(config, client.azure)
+            if action == "dns-publish":
+                deployed_app_gateway(config, client.azure)
+        pattern = r"[a-z0-9-]+\." + re.escape(config["location"]) + r"\.cloudapp\.azure\.com"
+        require(re.fullmatch(pattern, edge.get("publicIpFqdn", "")) is not None, "DNS target must be the Application Gateway public IP DNS name in the target region")
+        targets = {"api": edge["publicIpFqdn"], "admin": edge["publicIpFqdn"]}
+    elif edge is None:
         output = client.azure.scoped(["deployment", "group", "show", "--resource-group", config["target"]["resourceGroup"], "--name", deployment_name(config, 9, "edge"), "--query", "{state:properties.provisioningState,edge:properties.outputs.edge.value}"])
         require(output.get("state") == "Succeeded", "Deploy and verify the edge before DNS publication")
         edge = output["edge"]
@@ -82,9 +92,11 @@ def change_dns(config, action, operation, revision, directory, approved, *, clie
             for key in ("routeId", "adminRouteId"):
                 route = client.azure.scoped(["resource", "show", "--ids", edge[key], "--api-version", "2025-04-15"])
                 require(route.get("properties", {}).get("enabledState") == "Enabled" and route["properties"].get("linkToDefaultDomain") == "Disabled", "A gateway route is not enabled or exposes the default domain")
-    endpoint_pattern = r"[a-z0-9-]+\.(?:[a-z0-9-]+\.)?azurefd\.net"
-    require(edge.get("apiHost") == "llm-api." + config["baseDomain"] and edge.get("adminHost") == "llm-admin." + config["baseDomain"], "DNS hosts must match the deployed split-plane Front Door")
-    require(re.fullmatch(endpoint_pattern, edge.get("endpointHost", "")) and re.fullmatch(endpoint_pattern, edge.get("adminEndpointHost", "")) and edge["endpointHost"].lower() != edge["adminEndpointHost"].lower(), "DNS targets must be distinct deployed Front Door endpoints")
+    if not is_app_gateway(config):
+        endpoint_pattern = r"[a-z0-9-]+\.(?:[a-z0-9-]+\.)?azurefd\.net"
+        require(re.fullmatch(endpoint_pattern, edge.get("endpointHost", "")) and re.fullmatch(endpoint_pattern, edge.get("adminEndpointHost", "")) and edge["endpointHost"].lower() != edge["adminEndpointHost"].lower(), "DNS targets must be distinct deployed Front Door endpoints")
+        targets = {"api": edge["endpointHost"], "admin": edge["adminEndpointHost"]}
+    require(edge.get("apiHost") == "llm-api." + config["baseDomain"] and edge.get("adminHost") == "llm-admin." + config["baseDomain"], "DNS hosts must match the deployed split-plane " + ("Application Gateway" if is_app_gateway(config) else "Front Door"))
     require(edge.get("adminAccessMode") == "SourceIpAllowlistAndNativeLogin", "Admin DNS requires the reviewed source-IP and native-login access mode")
     record_ids = {plane: settings["zoneResourceId"] + "/CNAME/" + record for plane, record in settings["records"].items()}
     scope = {"configSha256": stage_fingerprint(config, 9), "records": record_ids}
@@ -99,8 +111,8 @@ def change_dns(config, action, operation, revision, directory, approved, *, clie
     if action == "dns-publish":
         require(edge.get("apiTrafficEnabled") is True and edge.get("adminTrafficEnabled") is True, "Approve and enable both edge planes before changing DNS")
         desired = {
-            "api": {"TTL": settings["ttl"], "CNAMERecord": {"cname": edge["endpointHost"]}, "metadata": {"managedBy": "llmgw-workflow"}},
-            "admin": {"TTL": settings["ttl"], "CNAMERecord": {"cname": edge["adminEndpointHost"]}, "metadata": {"managedBy": "llmgw-workflow"}},
+            plane: {"TTL": settings["ttl"], "CNAMERecord": {"cname": targets[plane]}, "metadata": {"managedBy": "llmgw-workflow"}}
+            for plane in ("api", "admin")
         }
         if checkpoint:
             require(checkpoint.get("after") == desired and checkpoint.get("phase") != "rolled-back", "Existing DNS checkpoint must not be replaced")

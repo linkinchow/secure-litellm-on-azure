@@ -39,6 +39,24 @@ test('Azure delivery uploads full envelope and LAW receives only index; idempote
     await assert.rejects(sink.content(item), /conflict/);
   } finally { mock.restoreAll(); }
 });
+test('administrator query finds a Spend Logs request_id through its hash, and a LiteLLM call id as is', async () => {
+  const sink = new AzureDelivery(config), queries: string[] = [];
+  mock.method(sink.credential, 'getToken', async () => ({ token: 'synthetic-token', expiresOnTimestamp: Date.now() + 10000 }));
+  mock.method(globalThis, 'fetch', async (_input: unknown, init?: RequestInit) => {
+    queries.push(JSON.parse(String(init?.body)).query); return Response.json({ tables: [] });
+  });
+  mock.method(console, 'log', () => {});
+  const workspace = '22222222-2222-4222-8222-222222222222';
+  try {
+    await runAdmin(['query', '--workspace', workspace, '--response-id', 'chatcmpl-EdH6xhDk'], sink);
+    await runAdmin(['query', '--workspace', workspace, '--call-id', '17d2fb58-b5de-4c99-8adf-9ed0d7b9d684'], sink);
+    assert.ok(queries[0]!.includes(`tostring(Record.responseHash) == '${sha('chatcmpl-EdH6xhDk')}'`));
+    assert.ok(!queries[0]!.includes('chatcmpl-EdH6xhDk'));
+    assert.ok(queries[1]!.includes("tostring(Record.callId) == '17d2fb58-b5de-4c99-8adf-9ed0d7b9d684'"));
+    await assert.rejects(runAdmin(['query', '--workspace', workspace, '--call-id', "x' or 1==1"], sink), /Invalid query filter/);
+    await assert.rejects(runAdmin(['query', '--workspace', workspace, '--response-id', 'a\nb'], sink), /Invalid query filter/);
+  } finally { mock.restoreAll(); }
+});
 test('administrator hold uses an independent case container and legal hold; held get works after normal expiry', async () => {
   const sink = new AzureDelivery(config), item = record(), bytes = Buffer.from(JSON.stringify(item));
   const directory = await mkdtemp(join(tmpdir(), 'l3-admin-'));

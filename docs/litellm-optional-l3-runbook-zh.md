@@ -570,6 +570,22 @@ node l3-audit/dist/src/admin.js query --workspace "$LAW_WORKSPACE_ID" --hours 24
 可加`--key-hash`；时间范围1–720小时，每次最多100条最新记录，以ID去重，不一次下载全库正文。
 查询返回索引，不返回prompt/response。更多统计用LAW KQL，不把JSON索引看作原文。
 
+`--id`是L3自己的记录ID，不等于LiteLLM的调用ID。从LiteLLM费用记录（Spend Logs）定位某次调用的原文时，
+按下面两种之一查询，均可与时间、模型组合：
+
+```bash
+# Spend Logs 的 request_id（即响应体 id，如 chatcmpl-…、resp_…）；CLI 先计算 SHA-256 再匹配 responseHash
+node l3-audit/dist/src/admin.js query --workspace "$LAW_WORKSPACE_ID" --hours 24 \
+  --response-id "REPLACE_SPEND_LOGS_REQUEST_ID"
+# LiteLLM 响应头 x-litellm-call-id；响应体没有 id 时（如上游错误）Spend Logs 也以它为 request_id
+node l3-audit/dist/src/admin.js query --workspace "$LAW_WORKSPACE_ID" --hours 24 \
+  --call-id "REPLACE_LITELLM_CALL_ID"
+```
+
+索引只保存响应ID的哈希`responseHash`，不保存可用于续接对话或取回响应的原始ID。HTTP记录取非流式响应体或第一个
+带ID的SSE事件；记录有缺口、响应体压缩或Embeddings时可能为空，此时改用`--call-id`或Key、时间及模型。
+WSS每轮的`responseHash`沿用原逻辑；WSS记录不带`callId`。`--key-hash`与LiteLLM数据库中虚拟Key的哈希算法相同（SHA-256）。
+
 根据索引`Record.blob`获取原文到独占0600文件：
 
 ```bash

@@ -12,7 +12,7 @@ export type Outcome = 'completed' | 'failed' | 'incomplete' | 'disconnected' | '
 export interface Part { direction: 'request' | 'response'; encoding: 'base64'; data: string }
 export interface Index {
   id: string; observedAt: string; transport: 'http' | 'wss'; path: string;
-  keyHash: string; model: string; previousResponseHash: string; responseHash: string;
+  keyHash: string; model: string; previousResponseHash: string; responseHash: string; callId: string;
   status: number; outcome: Outcome; gap: string; capturedBytes: number; observedBytes: number;
   contentSha256: string; blob: string; risk: string;
 }
@@ -35,7 +35,7 @@ function largeMetadata(text: string): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   const keys: string[] = [], objects: boolean[] = [];
   let responseDepth = -1;
-  const fields = new Set(['type', 'model', 'previous_response_id', 'response_id']);
+  const fields = new Set(['id', 'type', 'model', 'previous_response_id', 'response_id']);
   for (let i = 0; i < text.length; i++) {
     const char = text[i];
     if (char === '{' || char === '[') {
@@ -82,7 +82,7 @@ export class Capture {
     private readonly budget: Budget, private readonly emit: Emit) {
     const id = randomUUID(), observedAt = new Date().toISOString();
     this.index = { id, observedAt, transport, path, keyHash: authorization ? sha(authorization.replace(/^Bearer\s+/i, '')) : '',
-      model: '', previousResponseHash: '', responseHash: '', status: 0, outcome: 'unverified', gap: '',
+      model: '', previousResponseHash: '', responseHash: '', callId: '', status: 0, outcome: 'unverified', gap: '',
       capturedBytes: 0, observedBytes: 0, contentSha256: '', blob: '', risk: '' };
   }
   gap(reason: string): void { if (!this.index.gap) this.index.gap = reason; }
@@ -111,6 +111,17 @@ export class Capture {
   readRequest(): void {
     if (!this.index.gap && this.bodyEncoding.request === 'identity') {
       this.request(Buffer.concat(this.parts.filter(part => part.direction === 'request').map(part => part.data)));
+    }
+  }
+  // LiteLLM Spend Logs use the response body id as request_id; keep only its hash, like WSS turns.
+  responseId(value: unknown): void {
+    if (!this.index.responseHash && typeof value === 'string' && value && value.length <= 2048) {
+      this.index.responseHash = sha(value);
+    }
+  }
+  readResponse(): void {
+    if (!this.index.gap && this.bodyEncoding.response === 'identity') {
+      this.responseId(parse(Buffer.concat(this.parts.filter(part => part.direction === 'response').map(part => part.data))).id);
     }
   }
   finish(outcome: Outcome): void {

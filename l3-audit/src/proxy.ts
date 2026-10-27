@@ -1,7 +1,7 @@
 import http, { type IncomingHttpHeaders } from 'node:http';
 import { Transform } from 'node:stream';
 import { createParser } from 'eventsource-parser';
-import { Capture, object, paths, wsPaths, type Budget, type Emit, type Outcome } from './record.js';
+import { Capture, label, object, paths, wsPaths, type Budget, type Emit, type Outcome } from './record.js';
 import { Session } from './websocket.js';
 import { signal } from './queue.js';
 
@@ -40,7 +40,10 @@ export function createProxy(upstream: URL, emit: Emit, counters: () => unknown):
       },
     });
     outgoing.on('response', incoming => {
-      if (capture) capture.index.status = incoming.statusCode ?? 0;
+      if (capture) {
+        capture.index.status = incoming.statusCode ?? 0;
+        capture.index.callId = label(incoming.headers['x-litellm-call-id']);
+      }
       capture?.setEncoding('response', incoming.headers['content-encoding']);
       response.writeHead(incoming.statusCode ?? 502, incoming.headers);
       const sse = incoming.headers['content-type']?.includes('text/event-stream');
@@ -56,6 +59,7 @@ export function createProxy(upstream: URL, emit: Emit, counters: () => unknown):
           }
           try {
             const value = object(JSON.parse(event.data));
+            capture?.responseId(typeof value.type === 'string' ? object(value.response).id : value.id);
             if (value.type === 'response.completed' && object(value.response).status === 'completed') terminal = 'completed';
             if (value.type === 'error' || value.type === 'response.failed') terminal = 'failed';
             if (value.type === 'response.incomplete') terminal = 'incomplete';
@@ -79,6 +83,7 @@ export function createProxy(upstream: URL, emit: Emit, counters: () => unknown):
           catch { capture?.gap('invalid-sse-metadata'); }
         }
         if (!requestComplete) capture?.gap('request-not-complete');
+        if (!sse) capture?.readResponse();
         capture?.finish((incoming.statusCode ?? 500) >= 400 ? 'failed'
           : sse && capture.bodyEncoding.response !== 'identity' ? 'unverified'
           : sse ? terminal ?? 'incomplete' : 'completed');

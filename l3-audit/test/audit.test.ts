@@ -200,6 +200,45 @@ test('real HTTP/SSE keeps bytes and headers; upstream 400 and audit sink failure
     assert.ok(records[2]!.parts.every(part => part.direction === 'request'));
   } finally { proxy.closeAllConnections(); upstream.closeAllConnections(); await Promise.all([new Promise<void>(r => proxy.close(() => r())), new Promise<void>(r => upstream.close(() => r()))]); }
 });
+test('HTTP records link to LiteLLM Spend Logs by response id hash and call id', async () => {
+  const padding = 'x'.repeat(100000);
+  const upstream = http.createServer((request, response) => {
+    request.resume();
+    request.on('end', () => {
+      const headers = { 'x-litellm-call-id': 'call-' + request.url!.length };
+      if (request.url === '/v1/chat/completions') {
+        response.writeHead(200, { ...headers, 'content-type': 'text/event-stream' });
+        response.write('data: {"id":"chatcmpl-stream","choices":[]}\n\n'); response.end('data: [DONE]\n\n'); return;
+      }
+      if (request.url === '/v1/responses') {
+        response.writeHead(200, { ...headers, 'content-type': 'text/event-stream' });
+        response.write('data: {"type":"response.created","response":{"id":"resp-stream"}}\n\n');
+        response.end('data: {"type":"response.completed","response":{"id":"resp-stream","status":"completed"}}\n\n'); return;
+      }
+      if (request.url === '/chat/completions') {
+        response.writeHead(200, { ...headers, 'content-type': 'application/json' });
+        response.end(JSON.stringify({ choices: [{ message: { content: padding } }], id: 'chatcmpl-large' })); return;
+      }
+      response.writeHead(400, { ...headers, 'content-type': 'application/json' }).end('{"error":"synthetic"}');
+    });
+  });
+  const upstreamUrl = await listen(upstream), records: RecordEnvelope[] = [];
+  const proxy = createProxy(upstreamUrl, r => records.push(r), () => ({})), url = await listen(proxy);
+  const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+  try {
+    for (const path of ['/v1/chat/completions', '/v1/responses', '/chat/completions', '/responses']) {
+      const response = await fetch(new URL(path, url), { method: 'POST', body: '{"model":"coding"}' });
+      await response.text();
+    }
+    assert.deepEqual(records.map(r => [r.index.path, r.index.responseHash, r.index.callId]), [
+      ['/v1/chat/completions', hash('chatcmpl-stream'), 'call-20'],
+      ['/v1/responses', hash('resp-stream'), 'call-13'],
+      ['/chat/completions', hash('chatcmpl-large'), 'call-17'],
+      ['/responses', '', 'call-10'],
+    ]);
+    assert.ok(!JSON.stringify(records.map(r => r.index)).includes('resp-stream'));
+  } finally { proxy.closeAllConnections(); upstream.closeAllConnections(); await Promise.all([new Promise<void>(r => proxy.close(() => r())), new Promise<void>(r => upstream.close(() => r()))]); }
+});
 test('real WebSocket upgrade and frames traverse the transparent proxy unchanged', async () => {
   const upstream = http.createServer();
   const sockets = new Set<Duplex>();

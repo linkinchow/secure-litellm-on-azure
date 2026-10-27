@@ -37,8 +37,12 @@ export async function runAdmin(input: string[], sink = new AzureDelivery(setting
     const hours = Number(option('hours', false) || 24);
     if (!Number.isInteger(hours) || hours < 1 || hours > 720) throw new Error('Hours must be 1..720');
     const id = option('id', false), model = option('model', false), key = option('key-hash', false);
-    for (const value of [id, model, key]) if (value && !/^[a-zA-Z0-9_.:/-]{1,128}$/.test(value)) throw new Error('Invalid query filter');
-    const filters = [[id, 'id'], [model, 'model'], [key, 'keyHash']]
+    const call = option('call-id', false), responseId = option('response-id', false);
+    for (const value of [id, model, key, call]) if (value && !/^[a-zA-Z0-9_.:/-]{1,128}$/.test(value)) throw new Error('Invalid query filter');
+    // A Spend Logs request_id is the response id; the index only keeps its hash.
+    if (responseId && (responseId.length > 2048 || /[\s\u0000-\u001f]/.test(responseId))) throw new Error('Invalid query filter');
+    const filters = [[id, 'id'], [model, 'model'], [key, 'keyHash'], [call, 'callId'],
+      [responseId && sha(responseId), 'responseHash']]
       .filter(([value]) => value).map(([value, field]) => `| where tostring(Record.${field}) == '${value}'`).join('\n');
     const query = `L3Audit_CL | where TimeGenerated > ago(${hours}h)
 | where tostring(Record.path) != '/l3/health'

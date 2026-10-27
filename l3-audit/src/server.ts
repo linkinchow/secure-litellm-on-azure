@@ -19,7 +19,7 @@ setInterval(() => { if (spoolReady) void queue.tick(); }, 5000);
 let previousDrops = 0, previousFailures = 0;
 setInterval(() => {
   const health: Index = { id: randomUUID(), observedAt: new Date().toISOString(), transport: 'http', path: '/l3/health',
-    keyHash: '', model: '', previousResponseHash: '', responseHash: '', status: 200,
+    keyHash: '', model: '', previousResponseHash: '', responseHash: '', callId: '', status: 200,
     outcome: 'unverified', gap: '', capturedBytes: 0, observedBytes: 0, contentSha256: '', blob: '',
     risk: queue.counters.dropped > previousDrops || queue.counters.failures > previousFailures || !spoolReady
       ? 'audit-delivery-degraded' : queue.counters.diskBytes >= 0.8 * 1024 ** 3 ? 'audit-backlog-high' : '' };

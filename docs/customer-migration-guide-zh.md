@@ -1569,6 +1569,8 @@ proxy-foundation创建身份及Vault，不等于已生成登录凭据；entra-ap
 
 `adminAllowedCidrs`必须填写管理员浏览器实际使用路径的稳定公网出口，不能填写Laptop私网地址、`0.0.0.0/0`或推断的公司网段。IPv4逐项使用`/32`，IPv6逐项使用`/128`；分别确认浏览器的两类实际出口并取得批准，当前运行环境两类均已配置。Admin WAF固定Prevention，并以`SocketAddr`、`IPMatch`、`negateCondition=true`阻断白名单外来源；`adminRateLimitPerMinute`按真实企业NAT/UI基线设置。来源IP只是一层网络门禁，不能替代内层登录、强凭据、审计或FDID源站绑定。
 
+**可选入口：** `parameters.edge.type=applicationGateway`时以区域 Application Gateway WAF_v2 替代 Front Door（二选一，不使用origin/PLS），适合首字节等待可能超过240秒或需检查最多2MB请求体的场景。本期仅支持native认证和本地执行，步骤与回退见[本地执行指南8.4](../local_execution/stage2-9-guide-zh.md)及[模板说明](../infra/edge-appgw/README_ZH.md)；下文默认指Front Door路径。
+
 Admin客户端到Front Door不使用mTLS，不创建边缘CA信任Vault或Front Door Secret，也不依赖Preview API。两份Traefik源站证书仍须链到Microsoft Trusted CA List中的根并匹配各自域名；这是Front Door到私有origin的服务端TLS，不是管理员身份认证。
 
 | 步骤 | workflow显示名称 | stage | component或action | operation | approved_run_id | confirm_environment |

@@ -886,7 +886,7 @@ general_settings:
 | 决策 ID | 待确认问题 | 推荐默认 |
 | --- | --- | --- |
 | D01 | 网关互联网可达还是仅企业内网 | 按真实客户端位置选择，不双建主入口 |
-| D02 | 公网入口使用 Front Door 还是内网 App Gateway | 互联网：Front Door Premium；内网：App Gateway WAF v2 |
+| D02 | 公网入口使用 Front Door 还是内网 App Gateway | 互联网：Front Door Premium；需要首字节超过240秒或检查大请求体时可选公网 App Gateway WAF_v2（`edge.type=applicationGateway`）；内网：App Gateway WAF v2 |
 | D03 | Admin UI 是否独立入口 | 是，独立 Admin Front Door/WAF、PLS 和私有源站；内网模式另选 |
 | D04 | 数据面是否启用Entra身份 | 当前原生 vkey；企业准入延期，启用时企业 Token + 客户端 vkey，不复制模型 ACL |
 | D05 | 是否使用LiteLLM原生JWT | 否，已确认属于Enterprise付费能力，方案中禁止启用 |

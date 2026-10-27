@@ -180,9 +180,10 @@ flowchart TB
 | 模式 | 推荐入口 | 适用场景 | 关键控制 |
 | --- | --- | --- | --- |
 | 互联网访问 | Azure Front Door Premium + WAF + Private Link Service | 分布式员工、Codex/CLI、外部业务系统 | 全球边缘、WAF、Bot、速率限制、源站私有化 |
+| 互联网访问（可选替代） | Application Gateway WAF_v2（公网前端，`edge.type=applicationGateway`） | 首字节等待可能超过240秒、需检查最多2MB请求体，用户集中在单一区域 | 区域入口、WAF、Bot、速率限制；源站经VNet直连私有LB，不开放公网 |
 | 企业内网访问 | Application Gateway WAF v2（内部前端）+ ExpressRoute/VPN | 仅公司网络、强数据边界 | 无公网入口、私有 DNS、WAF、企业网络身份与出口治理 |
 
-推荐默认采用互联网访问模式，但必须确保 Front Door 到 AKS 源站使用 Private Link，AKS ingress 不保留可从互联网直接访问的公网 IP。若客户要求仅内网访问，则采用内部 Application Gateway WAF v2，不部署公网 Front Door。
+推荐默认采用互联网访问模式，但必须确保 Front Door 到 AKS 源站使用 Private Link，AKS ingress 不保留可从互联网直接访问的公网 IP。Front Door对首字节固定240秒上限；推理时间长、非流式长回答较多时，可选公网 Application Gateway WAF_v2替代 Front Door（二选一，见[模板说明](../infra/edge-appgw/README_ZH.md)），AKS ingress同样不开放公网。若客户要求仅内网访问，则采用内部 Application Gateway WAF v2，不部署公网 Front Door。
 
 ### 5.3 请求信任链
 

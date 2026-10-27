@@ -332,7 +332,7 @@ $$
 | 专属 Firewall Premium 改 Standard | 差额 = `730 ×（1.75 - Standard 每小时单价）`；另核数据处理差额 | 仅不要求 IDPS/TLS 检查等独有能力时评估；需改模板、策略与门禁，本次未重询价格 |
 | AKS 3 节点改为 2 节点 | 约 -$101.71 | 降低跨区/维护冗余；需重新验证 PDB和容量 |
 | ACR Premium降级 Basic | 约 -$45.00，仅注册表基础费 | 不能保留 Private Link；若私网要求不变则不可等价降级，优先评估复用已有 Premium ACR |
-| Front Door Premium取消或替换 | 移除原 $330 基础费，替代入口费用另计 | 纯内网可评估现有私网入口或内部 App Gateway WAF v2，并非必须新增；Standard 无法沿用私有源站连接 |
+| Front Door Premium取消或替换 | 移除原 $330 基础费，替代入口费用另计 | 纯内网可评估现有私网入口或内部 App Gateway WAF v2，并非必须新增；Standard 无法沿用私有源站连接。公网 App Gateway WAF_v2替代见7.4 |
 | PostgreSQL取消 HA | 约 -$148.19 | 恢复数据库单点，不符合当前 P0目标 |
 | Private Endpoint每增减 1 个 | 约 +/-$7.30 | 与私网依赖数量直接相关 |
 
@@ -357,6 +357,19 @@ $$
 | Firewall、公网IP、ACR、Managed Redis（已开HA）、内部LB | 平台在支持可用区的区域自动跨区 | - | 无额外固定费用 |
 
 合计约+$420/月（不含OS盘、L3和跨区数据传输）。可用区之间的数据传输是否收费以当时的带宽定价页为准，未计入；节点和数据库稳定后可用Reservation/Savings Plan抵消部分增量。
+
+### 7.4 以公网 Application Gateway WAF_v2 替代 Front Door 的增量（West US3，2026-10-27零售价）
+
+`parameters.edge.type=applicationGateway`时不再部署 Front Door Premium 与两条 Private Link Service，改为区域 Application Gateway WAF_v2。单价取自Azure Retail Prices API的Pay-As-You-Go价格，不含协议价与税费：
+
+| 项目 | 变化 | 单价 | 月费用 |
+| --- | --- | ---: | ---: |
+| Application Gateway WAF_v2 固定费 | 新增 | $0.36/小时 | 约$262.80 |
+| 容量单位 | 模板最少2个实例，每实例按至少10个容量单位计 | $0.0144/容量单位·小时 | 约$210.24起，随流量自动扩展 |
+| Standard公网IP | 新增1个 | 按区域公网IP单价 | 数美元 |
+| Front Door Premium基础费 | 移除 | — | 约-$330，请求与流量费另计 |
+
+合计固定部分约+$143/月（$473对$330，不含两边的请求/流量费、公网IP和日志）。Front Door按请求与出站流量计费，Application Gateway按容量单位（连接数、吞吐、计算量取最大）计费，长连接和SSE会占用容量，需按实际并发重新估算。切换期间两种入口同时存在、同时计费。
 
 ## 8. 不在本估算中的费用
 

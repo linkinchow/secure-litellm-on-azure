@@ -324,6 +324,22 @@ execute 成功后确认 `applied=true`、`verified=true`，实际两个私有入
 继续验证两条 Front Door 私有源站健康、实际 HTTPS/WSS 推理及 Admin 登录，
 不能只用浏览器看到的 Front Door 托管证书证明源站已换证。
 
+公网入口使用 Application Gateway（`parameters.edge.type=applicationGateway`）时，网关监听器直接使用这两份证书的
+PKCS#12 副本 `api-tls-pfx`/`admin-tls-pfx`，浏览器看到的就是本次上传的证书。换证后在部署终端生成新副本，
+网关引用无版本 URI，会自动加载新版本（Azure 侧轮询存在延迟）：
+
+```bash
+.venv/bin/python -m local_execution --config "$CFG" \
+  --step stage9-edge-certificates --operation plan
+.venv/bin/python -m local_execution --config "$CFG" \
+  --step stage9-edge-certificates --operation execute \
+  --approved-plan-sha256 "REPLACE_THIS_PFX_PLAN_SHA256"
+```
+
+plan 中两个平面的 `pemVersion` 应为本次版本 ID、`operation` 为 `write`；执行后以
+`openssl s_client -connect <网关公网IP>:443 -servername llm-api.<域名>` 核对叶证书指纹。API 证书由 ACME 自动续期时，
+续期步骤会同时写入 PFX，无需单独执行本步骤。
+
 ## 7. 收尾与失败处理
 
 在导入专用终端退出临时登录，恢复原 Azure CLI 配置选择：

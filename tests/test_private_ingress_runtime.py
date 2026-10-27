@@ -234,17 +234,23 @@ class PrivateIngressRuntimeTests(unittest.TestCase):
             "admin": {"privateIpAddress": "10.30.4.11"},
         }
         stage4 = {"state": "Succeeded", "ingress": ingress}
-        self.azure.scoped.side_effect = [stage4, {"properties": {"provisioningState": "Succeeded"}}]
+        self.azure.scoped.side_effect = [stage4, [], {"properties": {"provisioningState": "Succeeded"}}]
         result = verify_private_ingress_backends(self.config, "a" * 40, self.path, self.azure)
         self.assertTrue(result["backendRoutesVerified"])
         self.assertEqual(self.verify.call_count, 2)
-        self.assertTrue(all(call.kwargs["native"] is True for call in self.verify.call_args_list))
+        self.assertTrue(all(call.kwargs["native"] is True and call.kwargs["edge_binding"] is None for call in self.verify.call_args_list))
+        # Re-running Stage 6 on a published gateway verifies with the header the ingress already requires.
+        edge = "33333333-3333-4333-8333-333333333333"
+        bound = {"planes": {plane: {"frontDoorHeaderBound": None, "edgeHeaderBound": edge} for plane in ("api", "admin")}}
+        self.azure.scoped.side_effect = [stage4, [bound], {"properties": {"provisioningState": "Succeeded"}}]
+        verify_private_ingress_backends(self.config, "a" * 40, self.path, self.azure)
+        self.assertTrue(all(call.kwargs["edge_binding"] == ("X-LLMGW-Edge-Id", edge) for call in self.verify.call_args_list[-2:]))
         self.azure.scoped.side_effect = [stage4, {"state": "Succeeded", "verification": result}]
         require_private_ingress_backends(self.config, self.azure)
         result["revision"] = "b" * 40
         self.azure.scoped.side_effect = [stage4, {"state": "Succeeded", "verification": result}]
         require_private_ingress_backends(self.config, self.azure)
-        self.assertEqual(self.verify.call_count, 6)
+        self.assertEqual(self.verify.call_count, 8)
         self.azure.scoped.side_effect = [stage4, {"state": "Succeeded", "verification": result}]
         identifier = "11111111-1111-4111-8111-111111111111"
         require_private_ingress_backends(self.config, self.azure, front_door_id=identifier)

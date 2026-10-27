@@ -273,9 +273,23 @@ def verify_native_ingress_routes(config, ingress, *, front_door_id=None, edge_bi
     return ingress
 
 
+def current_edge_binding(config, azure):
+    """Edge header the ingress already requires after Stage 9, so re-running Stage 6 on a published gateway still verifies."""
+    name = deployment_name(config, 9, "edge-bind")
+    receipts = azure.scoped(["deployment", "group", "list", "--resource-group", config["target"]["resourceGroup"], "--query", f"[?name=='{name}'].properties.outputs.edgeBinding.value"])
+    require(isinstance(receipts, list) and len(receipts) <= 1, "Ambiguous Stage 9 edge binding receipt")
+    if not receipts:
+        return None
+    from scripts.edge_binding import bound_edge
+    bindings = {plane: bound_edge((receipts[0].get("planes") or {}).get(plane) or {}) for plane in ("api", "admin")}
+    require(bindings["api"] == bindings["admin"], "API and Admin ingresses are bound to different edges")
+    return bindings["api"]
+
+
 def verify_private_ingress_backends(config, revision, directory, azure=None):
     azure = azure or AzureCommands(config, directory)
-    ingress = verify_native_ingress_routes(config, deployed_private_ingress(config, azure))
+    ingress = deployed_private_ingress(config, azure)
+    ingress = verify_native_ingress_routes(config, ingress, edge_binding=current_edge_binding(config, azure))
     verification = {
         "revision": revision,
         "configSha256": stage_fingerprint(config, 6),

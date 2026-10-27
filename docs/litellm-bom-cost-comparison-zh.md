@@ -345,6 +345,19 @@ $$
 - 复用客户已有 Hub、DNS、Log Analytics、Sentinel和CI/CD平台；
 - 对开发/测试环境使用更小规格、非 HA数据库和工作时间启停，但生产验收环境不能因此失真。
 
+### 7.3 开启多可用区的增量（West US3，2026-10-21零售价）
+
+按当前参考环境（System/User池各2台`Standard_D4s_v4`、PG未开HA）估算`stage4Aks.availabilityZones`选3个区域的固定增量。单价取自Azure Retail Prices API的Pay-As-You-Go Linux/Consumption价格，不含协议价与税费：
+
+| 项目 | 变化 | 单价 | 月增量 |
+| --- | --- | ---: | ---: |
+| AKS节点 | 两个池的最小节点数2→3，各+1台`Standard_D4s_v4` | $0.192/小时 | 约+$280.32，另加每节点OS盘；池已扩到3台及以上时无增量 |
+| PostgreSQL | `ZoneRedundant`增加同规格备用实例，以`Standard_D2s_v3`（2 vCore）、128 GB为例 | $0.0855/vCore·小时；存储$0.115/GB·月 | 约+$124.83计算+$14.72存储 |
+| 可选L3 | 内容Blob和spool盘由LRS改ZRS | 按容量 | 小容量时差额很小，按实际容量核算 |
+| Firewall、公网IP、ACR、Managed Redis（已开HA）、内部LB | 平台在支持可用区的区域自动跨区 | - | 无额外固定费用 |
+
+合计约+$420/月（不含OS盘、L3和跨区数据传输）。可用区之间的数据传输是否收费以当时的带宽定价页为准，未计入；节点和数据库稳定后可用Reservation/Savings Plan抵消部分增量。
+
 ## 8. 不在本估算中的费用
 
 - 客户自有Entra认证代理的开发运维成本，以及经批准的Azure AI Guardrail/观测服务成本；本方案不包含LiteLLM Enterprise许可证；

@@ -260,6 +260,32 @@ test('manifest uses two replicas, per-replica PVC, immutable image and only priv
   assert.ok(text.includes('volumeClaimTemplates')); assert.ok(!text.includes('NodePort'));
   assert.ok(!text.includes('LoadBalancer')); assert.ok(!text.includes('api_key'));
 });
+test('zone-redundant manifest spreads replicas across zones on ZRS spool disks', () => {
+  const settings = { image: 'example.azurecr.io/l3@sha256:' + 'a'.repeat(64),
+    clientId: '11111111-1111-4111-8111-111111111111', storageUrl: 'https://example.blob.core.windows.net',
+    dce: 'https://example.eastus-1.ingest.monitor.azure.com', dcr: 'dcr-' + 'a'.repeat(32),
+    privateEndpointIps: ['10.0.1.4', '10.0.1.5'] };
+  type StatefulSet = { spec: {
+    template: { spec: { topologySpreadConstraints: { topologyKey: string; whenUnsatisfiable: string }[] } };
+    volumeClaimTemplates: { spec: { storageClassName: string } }[] } };
+  const workload = (documents: object[]) =>
+    documents.find(item => (item as { kind: string }).kind === 'StatefulSet') as StatefulSet;
+  for (const regional of [render(settings), render({ ...settings, zoneRedundant: false })]) {
+    assert.ok(!JSON.stringify(regional).includes('StorageClass'));
+    assert.deepEqual(workload(regional).spec.template.spec.topologySpreadConstraints.map(item => item.topologyKey), ['kubernetes.io/hostname']);
+    assert.equal(workload(regional).spec.volumeClaimTemplates[0]?.spec.storageClassName, 'managed-csi');
+  }
+  const zonal = render({ ...settings, zoneRedundant: true });
+  const spoolClass = zonal[0] as { kind: string; metadata: { name: string; namespace?: string }; parameters: { skuName: string }; volumeBindingMode: string };
+  assert.equal(spoolClass.kind, 'StorageClass');
+  assert.equal(spoolClass.metadata.namespace, undefined);
+  assert.equal(spoolClass.parameters.skuName, 'StandardSSD_ZRS');
+  assert.equal(spoolClass.volumeBindingMode, 'WaitForFirstConsumer');
+  assert.equal(workload(zonal).spec.volumeClaimTemplates[0]?.spec.storageClassName, spoolClass.metadata.name);
+  assert.deepEqual(workload(zonal).spec.template.spec.topologySpreadConstraints.map(item => [item.topologyKey, item.whenUnsatisfiable]),
+    [['kubernetes.io/hostname', 'ScheduleAnyway'], ['topology.kubernetes.io/zone', 'ScheduleAnyway']]);
+  assert.throws(() => render({ ...settings, zoneRedundant: 'true' as unknown as boolean }), /zoneRedundant/);
+});
 test('PG activation changes only content flag and uses template/UID compare-and-swap', () => {
   const original = 'model_list: []\ngeneral_settings:\n  disable_spend_logs: false\n  store_prompts_in_spend_logs: true\n  maximum_spend_logs_retention_period: 30d\n';
   const enabled = yamlParse(pgConfiguration(original, true));

@@ -9,7 +9,7 @@ import yaml
 
 from scripts.admin_credentials import OIDC_SECRET, SESSION_SECRET
 from scripts.backend_manifest import verify_runtime_image
-from scripts.customer_migration import ROOT, fingerprint, require, stage_fingerprint
+from scripts.customer_migration import ROOT, availability_zones, fingerprint, require, spread_across_zones, stage_fingerprint
 from scripts.migration_deploy import deployment_name, group_id
 from scripts.proxy_config import object_id, proxy_policy, proxy_settings
 from scripts.proxy_credentials import binding_contract, credential_bindings
@@ -61,6 +61,7 @@ def render_proxy_documents(config, foundation, applications, admin_credentials, 
                 pod = item["spec"]["template"]["spec"]
                 pod["containers"][0]["image"] = settings["image"]
                 next(volume for volume in pod["volumes"] if volume["name"] == "config")["configMap"]["name"] = policy_name
+                spread_across_zones(pod, availability_zones(config))
             documents.append(item)
     return documents
 

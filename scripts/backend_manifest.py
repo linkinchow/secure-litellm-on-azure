@@ -15,7 +15,7 @@ from urllib.parse import urlencode, urlunsplit
 import yaml
 
 from scripts.backend_access import render_backend_access
-from scripts.customer_migration import ROOT, configured, private_write, require, stage_fingerprint
+from scripts.customer_migration import ROOT, availability_zones, configured, private_write, require, spread_across_zones, stage_fingerprint
 from scripts.model_configuration import connection_endpoint, rendered_models, validate_options
 from scripts.runtime_configuration import apply_runtime_settings, runtime_overrides
 
@@ -105,6 +105,8 @@ def render_backend_manifest(config, platform, versions, host, endpoint_subnet):
     container["volumeMounts"].extend(copy.deepcopy(access["deploymentPatch"]["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]))
     pod["volumes"].extend(copy.deepcopy(access["deploymentPatch"]["spec"]["template"]["spec"]["volumes"]))
     pod["volumes"][0]["configMap"]["name"] = config_name
+    zones = availability_zones(config)
+    spread_across_zones(pod, zones)
     policies = list(yaml.safe_load_all((ROOT / "deploy/components/stage4-network/networkpolicy.yaml").read_text()))
     traffic = policies[1]["spec"]
     if authentication["mode"] == "native":
@@ -113,7 +115,9 @@ def render_backend_manifest(config, platform, versions, host, endpoint_subnet):
         traffic["ingress"] = [{"from": [{"podSelector": {"matchLabels": {"app.kubernetes.io/name": "entra-auth-proxy", "plane": plane}}} for plane in ("api", "admin")], "ports": [{"protocol": "TCP", "port": 4000}]}]
     traffic["egress"][1]["to"][0]["ipBlock"]["cidr"] = endpoint_subnet
     documents = [yaml.safe_load((ROOT / "deploy/base" / name).read_text()) for name in ("namespace.yaml", "service.yaml", "pdb.yaml")]
-    documents.extend([*access["resources"], config_map, deployment, *policies, yaml.safe_load((ROOT / "deploy/components/stage6-ha/hpa.yaml").read_text())])
+    autoscaler = yaml.safe_load((ROOT / "deploy/components/stage6-ha/hpa.yaml").read_text())
+    autoscaler["spec"]["minReplicas"] = max(autoscaler["spec"]["minReplicas"], len(zones))
+    documents.extend([*access["resources"], config_map, deployment, *policies, autoscaler])
     for document in documents:
         if document["kind"] != "Namespace":
             document["metadata"]["namespace"] = "litellm"

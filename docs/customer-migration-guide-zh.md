@@ -156,7 +156,7 @@ Admin使用**后台Vault**中独立的`litellm-ui-password`，不是Master Key�
 | Stage0 | parameters.backup、parameters.runner-connectivity、可选parameters.bootstrap | 新备份网络/工作区、两类备份身份及Runner VNet资源ID；见0-A、0-A2 |
 | Stage1 | parameters.monitoring、可选parameters.legacy-logging、legacyAccess | 旧日志工作区及真实批准来源；旧/新工作区不同不代表重复 |
 | Stage2 | contentAudit | 本文采用native；此后正文决策绑定证据 |
-| Stage3 | parameters.platform的ACR/日志名及stage4Network、stage4Aks | 这些网络/集群字段Stage3已要求提供，不能等Stage4才填写；stage5Data和模型连接可稍后补齐 |
+| Stage3 | parameters.platform的ACR/日志名及stage4Network、stage4Aks | 这些网络/集群字段Stage3已要求提供，不能等Stage4才填写；stage5Data和模型连接可稍后补齐；可选的stage4Aks.availabilityZones须在首次创建AKS前决定，见阶段3 |
 | Stage4 | azureOpenAIConnections、parameters.certificate-vault、parameters.runner-target-connectivity；入口发布前补privateIngress；可选certificates | workflow创建证书Vault及Runner到新AKS API/ACR的DNS链接；手动导入证书，自动签发才需专项身份，见4-A至4-C |
 | Stage5 | stage5Data、databaseAccess、DNS归属开关 | 批准数据库SKU/HA/Entra管理员，runtime服务主体Object ID；不能用用户ID代替运行身份 |
 | Stage6 | application | 派生后台镜像digest和模型组/真实deployment映射，见Stage6 |
@@ -655,6 +655,8 @@ sha256sum "$SNAPSHOT_DIR/deployments-before.json" > "$SNAPSHOT_DIR/SHA256SUMS"
 ### 阶段3：供应链与目标基础
 
 **开始前：** Stage2已验收；准备deploy身份、ACR唯一名称、目标Workspace以及完整stage4Network/stage4Aks配置。Stage3只创建平台早期资源，不创建新PG，不关闭旧模型账号的访问路径；Stage4才建立私网连接。
+
+**可用区（可选）：** `stage4Aks.availabilityZones`省略或为空时行为不变，节点池不指定可用区。填写2到3个区域（如`["1","2","3"]`）时，system和user节点池都跨这些区域，`systemNodeCount`、`userNodeCount`及autoscaler最小节点数都不少于区域数。Stage4 platform plan先用`az vm list-skus --all`核对两种节点规格在每个所选区域可用且没有订阅限制，West US等没有可用区的区域会在plan阶段失败。LiteLLM后端、两个auth-proxy和两套Traefik另加按区域打散的软约束（ScheduleAnyway），后端HPA最少副本不低于区域数；用软约束是为了某个区域故障、其节点仍在集群中登记时，替换Pod仍能调度到其他区域。节点池的可用区创建后不能修改，模板中的节点池名称也是固定的，因此不支持把已有集群原地改为跨区域：只改配置重新部署会在What-if中显示可用区变更、在部署时被AKS拒绝；手工替换节点池也会在下次部署时与模板冲突。已有环境需要跨区域时，按本指南的迁移流程新建目标环境。其他平台资源不需额外配置：在支持可用区的区域，Azure Firewall、Standard公网IP、ACR、开启高可用的Managed Redis和AKS内部负载均衡前端都由平台自动跨区。模板不为防火墙指定zones，符合微软当前建议；ACR的`zoneRedundancy`属性已失效，显示Disabled不影响跨区。PostgreSQL建议在多可用区环境把`stage5Data.postgresqlHighAvailabilityMode`设为`ZoneRedundant`，已有服务器可在线开启（建议低峰执行），但SameZone不能直接改为ZoneRedundant，须先关闭HA再开启。启用可选L3时，L3模板的`zoneRedundant`会随本字段设为true，见[L3手册](litellm-optional-l3-runbook-zh.md)。审计采集器开启多可用区后同样按区域软打散。
 
 先运行`Check public source image`，只选main，没有environment/stage。核对`source-image-<run ID>`中的source-summary、SBOM及扫描结果；当前阻断策略为可修复CRITICAL，不是零漏洞或上游发布者签名证明。
 

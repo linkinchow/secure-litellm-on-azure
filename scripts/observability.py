@@ -8,7 +8,7 @@ from uuid import UUID
 
 import yaml
 
-from scripts.customer_migration import ROOT, fingerprint, require
+from scripts.customer_migration import ROOT, availability_zones, fingerprint, require, spread_across_zones
 from scripts.migration_deploy import deployment_name, group_id
 
 COLLECTOR_DIGEST = "sha256:8164eab2e6bca9c9b0837a8d2f118a6618489008a839db7f9d6510e66be3923c"
@@ -87,6 +87,7 @@ def render_observability(config, source, receipt, subnet):
             container["startupProbe"] = {"httpGet": {"path": "/", "port": 13133}, "failureThreshold": 30, "periodSeconds": 5}
             pod["volumes"][0]["configMap"]["name"] = config_name
             pod["securityContext"]["fsGroup"] = 10001
+            spread_across_zones(pod, availability_zones(config), document["spec"]["selector"])
         result.append(document)
     result.append({"apiVersion": "policy/v1", "kind": "PodDisruptionBudget", "metadata": {"name": "otel-collector", "namespace": "litellm"}, "spec": {"minAvailable": 1, "selector": {"matchLabels": {"app.kubernetes.io/name": "otel-collector"}}}})
     policy = next(document for document in yaml.safe_load_all((ROOT / "deploy/components/stage8-audit/networkpolicy.yaml").read_text()) if document["metadata"]["name"] == "stage8-collector")

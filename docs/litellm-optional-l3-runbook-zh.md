@@ -157,7 +157,8 @@ printf '%s\n' "$AKS_FACTS" | jq '.'
     "existingMonitorScopeName": {"value": ""},
     "workspaceAlreadyLinkedToMonitorScope": {"value": false},
     "privateDnsZonesToCreate": {"value": []},
-    "privateDnsZonesToLink": {"value": []}
+    "privateDnsZonesToLink": {"value": []},
+    "zoneRedundant": {"value": false}
   }
 }
 ```
@@ -197,13 +198,21 @@ jq --arg email "$ALERT_EMAIL" --arg issuer "$AKS_ISSUER" \
   .parameters.workspaceName.value = $config[0].parameters.platform.logAnalyticsWorkspaceName |
   .parameters.virtualNetworkName.value = $config[0].parameters.platform.stage4Network.virtualNetworkName |
   .parameters.privateEndpointSubnetName.value = $config[0].parameters.platform.stage4Network.privateEndpointSubnetName |
-  .parameters.aksOidcIssuer.value = $issuer
+  .parameters.aksOidcIssuer.value = $issuer |
+  .parameters.zoneRedundant.value = (($config[0].parameters.platform.stage4Aks.availabilityZones // []) | length > 0)
 ' "$L3_DIR/infra.parameters.json" > "$PARAMETERS_TMP"
 mv "$PARAMETERS_TMP" "$L3_DIR/infra.parameters.json"
 chmod 600 "$L3_DIR/infra.parameters.json"
 ```
 
 无需再维护一份邮箱；但必须在What-if审核时确认接收者确实是客户希望通知的人。
+
+`zoneRedundant`跟随CFG的`stage4Aks.availabilityZones`：节点池跨可用区时为true，内容Storage使用Standard_ZRS，
+第4节渲染的工作负载另带`l3-spool-zrs`（StandardSSD_ZRS）StorageClass作为spool盘，两个副本按区域软打散。
+AKS没有内置ZRS磁盘StorageClass，沿用`managed-csi`的LRS盘会把副本固定在磁盘所在区域。
+已部署的LRS账号不能靠改参数重新部署变为ZRS，What-if/部署会失败；先执行
+`az storage account migration start --sku Standard_ZRS`转换（通常72小时内开始，无完成时间SLA，期间不停机），
+转换完成后再部署。已有StatefulSet的spool存储类不可修改，切换前须确认spool已清空并按发布流程重建StatefulSet。
 `ownerEmail`有效但指向其他负责人时不静默替换为操作员邮箱，按客户配置管理流程更正。
 
 ### 3.2 参数取值与审核

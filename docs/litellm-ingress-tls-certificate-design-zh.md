@@ -132,7 +132,7 @@ DNS-01 用公共 DNS TXT 证明域名控制权，不要求私有源站开放公�
 4. 发布文件路由配置和 Deployment。证书 Secret 名称及 Pod 模板指纹变化触发滚动更新，而不是依赖 Traefik 自行从 Key Vault 拉取新版本。
 5. 等待入口就绪，检查实际内部负载均衡地址、批准子网、TLS 证书指纹及错误平面 Host 拒绝；API 与 admin 必须使用不同的私网地址。
 
-每个入口默认两副本，配有 PDB 和拓扑分散配置；这不自动等于跨可用区容灾。Traefik 在 Pod 内监听 HTTPS 8443，由内部 LoadBalancer 的 443 端口转发；最低 TLS 版本为 1.2，启用严格 SNI，关闭 dashboard 和访问日志。
+每个入口默认两副本，配有 PDB 和拓扑分散配置；这不自动等于跨可用区容灾。配置 `stage4Aks.availabilityZones` 后，节点池跨可用区，入口另加按区域打散的软约束。Traefik 在 Pod 内监听 HTTPS 8443，由内部 LoadBalancer 的 443 端口转发；最低 TLS 版本为 1.2，启用严格 SNI，关闭 dashboard 和访问日志。
 
 来源 CIDR、命名空间隔离及 NetworkPolicy 限制访问路径，但不能替代应用认证。发布结果包含的资源回执或 `verified` 标记，也不代表整个迁移阶段已验收。
 

@@ -92,10 +92,11 @@ class FakeAzure:
         if arguments[:3] == ["network", "vnet", "show"]:
             return {"prefixes": ["10.30.0.0/16"], "subnets": [{"name": "snet-ingress", "prefix": "10.30.4.0/24"}, {"name": "snet-pe", "prefix": "10.30.8.0/24"}]}
         if arguments[:2] == ["resource", "list"]:
-            vault = gateway_vault_name(self.config)
-            if arguments[arguments.index("--resource-type") + 1] == "Microsoft.KeyVault/vaults":
-                return [vault]
-            return [{"name": f"{vault}/{name}", "contentType": "application/x-pkcs12"} for name in self.secrets]
+            assert arguments[arguments.index("--resource-type") + 1] == "Microsoft.KeyVault/vaults"
+            return [gateway_vault_name(self.config)]
+        if arguments[:1] == ["rest"]:
+            assert arguments[arguments.index("--url") + 1] == f"https://management.azure.com/subscriptions/{self.config['azure']['subscriptionId']}/resourceGroups/{self.config['target']['resourceGroup']}/providers/Microsoft.KeyVault/vaults/{gateway_vault_name(self.config)}/secrets?api-version=2023-07-01"
+            return [{"name": name, "contentType": "application/x-pkcs12"} for name in self.secrets]
         if arguments[:3] == ["network", "private-dns", "link"]:
             return [group_id(self.config) + "/providers/Microsoft.Network/virtualNetworks/target-vnet"]
         if arguments[:2] == ["resource", "show"]:

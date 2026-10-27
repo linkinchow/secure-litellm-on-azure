@@ -189,8 +189,9 @@ def inspect_prerequisites(config, azure):
     ready = False
     if existing:
         # The gateway is created only once stage9-edge-certificates has written both listener certificates.
-        secrets = azure.scoped(["resource", "list", "--resource-group", group, "--resource-type", "Microsoft.KeyVault/vaults/secrets", "--query", f"[?starts_with(name, '{vault_name}/')].{{name:name,contentType:properties.contentType}}"])
-        found = {item["name"].split("/", 1)[1]: item.get("contentType") for item in secrets or []}
+        # Secrets are not tracked resources, so `az resource list` never returns them; list them on the management plane.
+        secrets = azure.scoped(["rest", "--method", "get", "--url", f"https://management.azure.com{vault}/secrets?api-version=2023-07-01", "--query", "value[].{name:name,contentType:properties.contentType}"])
+        found = {item["name"]: item.get("contentType") for item in secrets or []}
         ready = all(found.get(secret) == "application/x-pkcs12" for secret in certificate_secret_names().values())
     links = azure.scoped(["network", "private-dns", "link", "vnet", "list", "--resource-group", group, "--zone-name", "privatelink.vaultcore.azure.net", "--query", "[].virtualNetwork.id"])
     target = resource_prefix(config) + "Microsoft.Network/virtualNetworks/" + network

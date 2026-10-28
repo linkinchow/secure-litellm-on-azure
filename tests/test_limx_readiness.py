@@ -7,12 +7,8 @@ from tests.test_runtime_config import native_customer
 
 def platform_customer():
     config = native_customer()
-    platform = config["parameters"]["platform"]
-    subscription = config["azure"]["subscriptionId"]
-    platform["azureOpenAIConnections"] = [{
-        "alias": "api1", "accountName": "api1-resource", "subscriptionId": subscription, "resourceGroupName": "rg-models",
-        "accountResourceId": f"/subscriptions/{subscription}/resourceGroups/rg-models/providers/Microsoft.CognitiveServices/accounts/api1-resource",
-    }]
+    require_connection = config["parameters"]["platform"]["azureOpenAIConnections"]
+    assert require_connection, "the shared fixture must define a model connection"
     return config
 
 

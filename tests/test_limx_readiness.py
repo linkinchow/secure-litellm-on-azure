@@ -23,18 +23,18 @@ class PlatformOptionTests(unittest.TestCase):
         platform["stage4Aks"].update(upgradeChannel="none", nodeOSUpgradeChannel="None")
         platform.setdefault("stage5Data", {})["redisHighAvailability"] = "Disabled"
         platform["azureOpenAIConnections"][0]["privateEndpoint"] = False
-        validate_config(copy.deepcopy(config))
+        validate_config(copy.deepcopy(config), "test")
         for path, value in ((("stage4Aks", "upgradeChannel"), "weekly"), (("stage4Aks", "nodeOSUpgradeChannel"), "none"),
                             (("stage5Data", "redisHighAvailability"), "Off")):
             broken = copy.deepcopy(config)
             broken["parameters"]["platform"][path[0]][path[1]] = value
             with self.subTest(path=path), self.assertRaises(MigrationError):
-                validate_config(broken)
+                validate_config(broken, "test")
         for connection in ({"privateEndpoint": "no"}, {"privateEndpoint": False, "endpoint": "https://gateway.example.invalid"}):
             broken = copy.deepcopy(config)
             broken["parameters"]["platform"]["azureOpenAIConnections"][0].update(connection)
             with self.subTest(connection=connection), self.assertRaises(MigrationError):
-                validate_config(broken)
+                validate_config(broken, "test")
 
     def test_templates_keep_safe_defaults_and_derive_public_model_access(self):
         aks = (ROOT / "infra/modules/private-aks/main.bicep").read_text()

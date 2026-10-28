@@ -26,6 +26,7 @@ READMES = (
     "local_execution/README_ZH.md",
     "local_execution/stage2-9-guide-zh.md",
     "docs/litellm-1.104.0-upgrade-validation-2026-10-07.md",
+    "docs/litellm-1.104.8-upgrade-validation-2026-10-28.md",
     "docs/litellm-model-sync-runbook-zh.md",
     "docs/litellm-security-hardening-implementation-roadmap-zh.md",
     "docs/litellm-security-hardening-change-list-zh.md",
@@ -117,7 +118,7 @@ class ProjectDocumentationTests(unittest.TestCase):
             with self.subTest(document=name):
                 self.assertIn("2026-10-09", text)
                 self.assertRegex(text, r"(?i)west\s*us\s*3")
-                for token in ("native", "1.104.0", "Balanced_B0", "10000", "SocketAddr"):
+                for token in ("native", "1.104.8", "Balanced_B0", "10000", "SocketAddr"):
                     self.assertIn(token, text)
 
     def test_retired_stage_documents_have_no_remaining_references(self):
@@ -545,22 +546,22 @@ class ProjectDocumentationTests(unittest.TestCase):
         from scripts.validate_manifests import EXPECTED_DIGEST
         from scripts.validate_stage6 import APPROVED_DIGEST
 
-        digest = "sha256:625981c83410a3ea68eb0697590a57ec1d764d634514d54fa5db0591077ee839"
+        digest = "sha256:6cc08e60be3e4ebf0cfb41ef23aed97e9ba4f61702d1e95e533f47ee6d67865f"
         self.assertEqual(source_image(), "docker.litellm.ai/berriai/litellm@" + digest)
         self.assertEqual(EXPECTED_DIGEST, digest)
         self.assertEqual(APPROVED_DIGEST, digest)
-        self.assertEqual(RUNTIME_CONTRACT["versions"], {"litellm": "1.104.0", "anyio": "4.14.2", "PyJWT": "2.15.0"})
+        self.assertEqual(RUNTIME_CONTRACT["versions"], {"litellm": "1.104.8", "anyio": "4.14.2", "PyJWT": "2.15.0"})
         self.assertTrue(all(RUNTIME_CONTRACT["gpt6"].values()))
         self.assertTrue(all(RUNTIME_CONTRACT["catalog"].values()))
         promotion = yaml.load((ROOT / ".github/workflows/promote-litellm-image.yml").read_text(), Loader=yaml.BaseLoader)
         inputs = promotion["on"]["workflow_dispatch"]["inputs"]
         self.assertEqual(inputs["source_image"]["default"], "docker.litellm.ai/berriai/litellm@" + digest)
         self.assertEqual(inputs["environment"]["default"], "test")
-        self.assertEqual(inputs["target_tag"]["default"], "litellm-azure:1.104.0")
+        self.assertEqual(inputs["target_tag"]["default"], "litellm-azure:1.104.8")
         self.assertEqual(inputs["build_azure_runtime"]["default"], "true")
         self.assertIn("docker.litellm.ai/berriai/litellm@" + digest, (ROOT / ".github/workflows/ci.yml").read_text())
-        evidence = (ROOT / "docs/litellm-1.104.0-upgrade-validation-2026-10-07.md").read_text()
-        for required in (digest, "CVE-2026-102268", "gpt-6.1", "189", "operator-managed"):
+        evidence = (ROOT / "docs/litellm-1.104.8-upgrade-validation-2026-10-28.md").read_text()
+        for required in (digest, "CVE-2026-102268", "gpt-6.1", "189", "operator-managed", "e82a3c646908ba0a6ee0beddc4310d7a6cac4065"):
             self.assertIn(required, evidence)
 
     def test_runner_connectivity_workflow_example_and_runbook_stay_aligned(self):

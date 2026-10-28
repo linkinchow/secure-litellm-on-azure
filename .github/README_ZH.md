@@ -58,6 +58,6 @@ CI不登录Azure，不部署资源。
 
 ## Action版本治理
 
-当前LiteLLM使用`1.104.0`固定源码供应链；`source-image-checks.yml`用于源码镜像检查，`promote-litellm-image.yml`保留受控digest导入/晋级用途。模型同步的唯一操作入口说明见[专用runbook](../docs/litellm-model-sync-runbook-zh.md)，不能用CI成功推断已在客户环境执行同步。
+当前LiteLLM使用`1.104.8`固定源码供应链；`source-image-checks.yml`用于源码镜像检查，`promote-litellm-image.yml`保留受控digest导入/晋级用途。模型同步的唯一操作入口说明见[专用runbook](../docs/litellm-model-sync-runbook-zh.md)，不能用CI成功推断已在客户环境执行同步。
 
 工作流中的所有第三方Action均固定到已验证的完整commit SHA，行尾保留对应版本标签注释。Dependabot每月提出升级，升级必须经过Dependency Review和Pull Request审批，不直接跟随可移动标签。

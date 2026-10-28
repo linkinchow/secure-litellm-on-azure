@@ -10,7 +10,7 @@
 
 2026-10-09只读 Azure 管理面核查的参考环境为 West US3 新建 dev/test，不是已验收生产环境。AKS 为 private、Running/Succeeded，Azure CNI overlay、Azure RBAC、禁用本地账户、Workload Identity/OIDC 已启用；System/User 池各 2 台 `Standard_D4s_v4`。入口为独立 API/Admin Azure Front Door Premium，经各自 PLS 和隔离的私有 Traefik 回源。两侧 WAF 为 Prevention；Admin 用否定 `SocketAddr IPMatch` 阻断白名单外来源，已配置三个 IPv4 `/32` 和一个 IPv6 `/128` 精确出口，不公开真实地址。
 
-当前默认是**原生 LiteLLM 网关**：私有入口直接转发到 LiteLLM，不经过 Entra 认证代理。用户另行验证了原生 Admin 密码 fallback 登录与 Virtual Key 的 Codex Responses 推理；这不是 Entra 用户 SSO、所有协议或生产验收。模型使用 Workload Identity；PostgreSQL 与 Managed Redis 使用 Entra-only 认证；后端 Key Vault 与证书 Key Vault 分离，ACR/后端私有化，出站经过 Firewall 路由。镜像源固定 LiteLLM `1.104.0`，见[升级验证](litellm-1.104.0-upgrade-validation-2026-10-07.md)。
+当前默认是**原生 LiteLLM 网关**：私有入口直接转发到 LiteLLM，不经过 Entra 认证代理。用户另行验证了原生 Admin 密码 fallback 登录与 Virtual Key 的 Codex Responses 推理；这不是 Entra 用户 SSO、所有协议或生产验收。模型使用 Workload Identity；PostgreSQL 与 Managed Redis 使用 Entra-only 认证；后端 Key Vault 与证书 Key Vault 分离，ACR/后端私有化，出站经过 Firewall 路由。镜像源固定 LiteLLM `1.104.8`，见[升级验证](litellm-1.104.8-upgrade-validation-2026-10-28.md)。
 
 Entra 企业准入、MFA/PIM、灾备/容量、Guardrail/SOC 等生产控制仍是待批准和验证的门禁。当前没有 APIM、App Service 或单一共享认证代理运行路径。以下保留的风险与生产设计可复用于其他区域；部署、迁移和证据以[部署指南](customer-deployment-workflows-zh.md)及[迁移指南](customer-migration-guide-zh.md)为准，不将模板或阶段编号等同于验收。
 

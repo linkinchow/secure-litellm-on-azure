@@ -15,7 +15,7 @@
 
 当前greenfield native dev/test网关已在West US 3运行：Private AKS为`Running/Succeeded`，Azure RBAC与禁用本地账号、WI/OIDC均开启，Azure CNI Overlay，2个system加2个user节点，节点SKU `Standard_D4s_v4`。API/Admin通过Front Door Premium分别连接两条PLS和两个私有入口；这不是生产容量或其他区域可用性保证。
 
-用户已确认Admin `/fallback/login`原生用户名/密码登录及virtual key的Codex Responses推理。UI密码来自**后台Vault**中独立的`litellm-ui-password`，不是Master Key或证书Vault秘密；用户侧Entra SSO延期，native路径跳过Stage7。Admin WAF当前精确配置3个批准公网IPv4 `/32`及1个IPv6 `/128`。源镜像固定1.104.0，秘密/身份/续期、审计、恢复及各阶段实际检查仍是门禁，不据当前可用性声明完整Stage0–9或production签收。
+用户已确认Admin `/fallback/login`原生用户名/密码登录及virtual key的Codex Responses推理。UI密码来自**后台Vault**中独立的`litellm-ui-password`，不是Master Key或证书Vault秘密；用户侧Entra SSO延期，native路径跳过Stage7。Admin WAF当前精确配置3个批准公网IPv4 `/32`及1个IPv6 `/128`。源镜像固定1.104.8，秘密/身份/续期、审计、恢复及各阶段实际检查仍是门禁，不据当前可用性声明完整Stage0–9或production签收。
 
 只读管理面回读确认PostgreSQL 16为`Ready`，`activeDirectoryAuth=Enabled`、`passwordAuth=Disabled`且公网禁用；Redis为`Microsoft.Cache/redisEnterprise Balanced_B0`，default数据库`accessKeysAuthentication=Disabled`、`clientProtocol=Encrypted`、端口10000。Redis集群`publicNetworkAccess=null`不是公网启用或禁用的证据，不能省略私网/访问控制验证。ACR Premium禁用admin账号及公网，后台与证书Vault均启用RBAC并禁用公网；这些状态不替代实际Pod数据面权限、TLS和续期测试。
 
@@ -474,7 +474,7 @@ execute会重新生成实时plan；代码、配置、云状态或发布报告变
 .venv/bin/python -m local_execution --config local_execution/customer.json --step stage3-source-check
 ```
 
-该步骤先从固定LiteLLM `1.104.0`上游digest构建当前仓库的派生运行镜像，再验证非root UID、LiteLLM/AnyIO/PyJWT版本、GPT-6.1系列识别及Azure GPT-6 Astra/Sol/Luna目录项，然后生成SBOM并执行Trivy门禁；不会推送ACR。派生构建继续用SHA256固定的`security-requirements.txt`约束AnyIO `4.14.2`，防止依赖回退。不要把上游层单独作为最终应用镜像部署。
+该步骤先从固定LiteLLM `1.104.8`上游digest构建当前仓库的派生运行镜像，再验证非root UID、LiteLLM/AnyIO/PyJWT版本、GPT-6.1系列识别及Azure GPT-6 Astra/Sol/Luna目录项，然后生成SBOM并执行Trivy门禁；不会推送ACR。派生构建继续用SHA256固定的`security-requirements.txt`约束AnyIO `4.14.2`，防止依赖回退。不要把上游层单独作为最终应用镜像部署。
 
 失败时查看本次四项结果；`build`、`runtime`、`sbom`和`scan`必须全部为`passed`：
 
@@ -484,7 +484,7 @@ jq '{sourceImage,evaluatedImage,evaluatedImageId,buildInputsSha256,status,result
   "$RUN_DIR/source-summary.json"
 ```
 
-发现新的可修复CRITICAL或runtime模型合同不匹配时停在Stage3，更新受审查的安全覆盖或选择通过完整兼容验证的新稳定LiteLLM版本；不得改报告、降低严重级别或改用RC/dev镜像绕过。`1.104.0`的数据库迁移会有意省略两个大表索引；Stage5严格允许的仅是这两项operator-managed差异，详见[升级验证](../docs/litellm-1.104.0-upgrade-validation-2026-10-07.md)。
+发现新的可修复CRITICAL或runtime模型合同不匹配时停在Stage3，更新受审查的安全覆盖或选择通过完整兼容验证的新稳定LiteLLM版本；不得改报告、降低严重级别或改用RC/dev镜像绕过。`1.104.0`起（`1.104.8`迁移相同）的数据库迁移会有意省略两个大表索引；Stage5严格允许的仅是这两项operator-managed差异，详见[升级验证](../docs/litellm-1.104.0-upgrade-validation-2026-10-07.md)及[1.104.8核对](../docs/litellm-1.104.8-upgrade-validation-2026-10-28.md)。
 
 3. 计划并真正部署Stage3 platform：
 

@@ -208,9 +208,9 @@ token provider、credential、认证 header、TLS 绕过和内部 `model_info.id
 “价格未知”的兜底值。支持某个成本字段不等于改变实际 Azure 账单。
 
 官方最新文档的 `cost_per_second` 需要 LiteLLM 1.105.0 或更高版本。
-不能因为网页列出了字段，就认为当前固定的 1.104.0 镜像已支持；不支持的字段
+不能因为网页列出了字段，就认为当前固定的 1.104.8 镜像已支持；不支持的字段
 会导致校验失败，而不是声称定价已生效。当前拒绝统一的 `cost_per_second`，
-但支持 1.104.0 已有的 `input_cost_per_second` / `output_cost_per_second`。
+但支持 1.104.8 已有的 `input_cost_per_second` / `output_cost_per_second`。
 
 ### 2.4 支持的模型级字段
 
@@ -336,9 +336,9 @@ token provider、credential、认证 header、TLS 绕过和内部 `model_info.id
 说明新接口不再要求每月更换日期化 `api-version`；不能据此忽略部署区域、
 协议、SDK 和模型功能的兼容性。
 
-当前固定的 [LiteLLM 1.104.0 Azure URL 适配器](https://github.com/BerriAI/litellm/blob/v1.104.0/litellm/llms/azure/common_utils.py)
+当前固定的 [LiteLLM 1.104.8 Azure URL 适配器](https://github.com/BerriAI/litellm/blob/v1.104.8/litellm/llms/azure/common_utils.py)
 识别 `api_version="v1"`，其
-[Responses 适配器](https://github.com/BerriAI/litellm/blob/v1.104.0/litellm/llms/azure/responses/transformation.py)
+[Responses 适配器](https://github.com/BerriAI/litellm/blob/v1.104.8/litellm/llms/azure/responses/transformation.py)
 据此选择 `/openai/v1/responses`。本目录校验也接受 `v1`；这不是工具的隐式默认，
 仍须在模型配置或 CLI 中明确提供。资源级 `endpoint` 保持账号根地址，
 **不要添加 `/openai/v1/` 或 `/responses` 路径**。

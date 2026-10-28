@@ -1,6 +1,6 @@
-"""Closed, non-secret runtime override subset for public LiteLLM v1.104.0.
+"""Closed, non-secret runtime override subset for public LiteLLM v1.104.8.
 
-Pinned source: https://github.com/BerriAI/litellm/blob/v1.104.0/
+Pinned source: https://github.com/BerriAI/litellm/blob/v1.104.8/
   litellm/proxy/_types.py (GeneralSettings)
   litellm/proxy/proxy_server.py (ProxyConfig.load_config)
   litellm/__init__.py, litellm/constants.py, litellm/_logging.py (globals)

@@ -22,7 +22,7 @@ DELIVERY_BLOCKERS = (
     "Native UI core log reading is locally tested; full management writes, auxiliary UI compatibility, mobile access, credential migration and retention/recovery remain incomplete or unaccepted",
     "Actual GitHub approval binding and automatic technical stage acceptance are incomplete",
     "Legacy exposure and credential lifecycle operations remain incomplete",
-    "Locked 1.95.0 to 1.104.0 synthetic restore/upgrade is tested; final write freeze/synchronization, HA/PITR, customer-sized downtime and data-aware rollback remain incomplete or unaccepted",
+    "Locked 1.95.0 to 1.104.0 synthetic restore/upgrade is tested (1.104.8 ships the same 189 migrations; rerun pending); final write freeze/synchronization, HA/PITR, customer-sized downtime and data-aware rollback remain incomplete or unaccepted",
 )
 
 

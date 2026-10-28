@@ -51,7 +51,7 @@ flowchart TB
 | Network | Private AKS, private endpoints/DNS, controlled egress and default-deny network policies |
 | Identity | Current native API uses virtual keys; Admin uses LiteLLM username/password fallback login, not user Entra SSO. Admin WAF Prevention gates exact approved public `/32` and `/128` egress addresses; workload identity authenticates Azure model access |
 | Data and secrets | Entra-only PostgreSQL and Redis; private backend and certificate Key Vaults are distinct; backup and restore controls require acceptance |
-| Runtime | LiteLLM `1.104.0` pinned source build and digest-based delivery; non-root/read-only baseline, HA and routing components |
+| Runtime | LiteLLM `1.104.8` pinned source build and digest-based delivery; non-root/read-only baseline, HA and routing components |
 | Audit and observation | Native Spend Logs configuration and mode-specific gates; metadata monitoring; optional L3, tracing and Guardrail components |
 | Delivery | Customer Environment configuration, OIDC, staged evidence checks, IaC previews and offline validation |
 

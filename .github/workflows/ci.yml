@@ -100,7 +100,7 @@ jobs:
           --env RUN_AZURE_PRISMA_CONTRACT_TESTS=1
           --mount "type=bind,src=$PWD,dst=/workspace,readonly" --workdir /workspace
           --entrypoint /app/.venv/bin/python
-          docker.litellm.ai/berriai/litellm@sha256:625981c83410a3ea68eb0697590a57ec1d764d634514d54fa5db0591077ee839
+          docker.litellm.ai/berriai/litellm@sha256:6cc08e60be3e4ebf0cfb41ef23aed97e9ba4f61702d1e95e533f47ee6d67865f
           -m unittest -b tests.test_azure_postgresql tests.test_azure_postgresql_prisma
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:

@@ -825,6 +825,77 @@ printf 'api expected=%s actual=%s\nadmin expected=%s actual=%s\n' \
 - 查询到用户自建且目标为该AKS的Private Endpoint时，停止自动恢复，由网络Owner按客户变更流程删除并重建该PE；不要删除AKS管理的API PE，也不要误删ACR/Vault/PG/Redis PE。
 - 已进入Stage9时，还要复核Private Link Service、Front Door origin和实际客户端；入口前端地址或资源映射变化时重新plan受影响的Stage9步骤，不直接启流量。
 
+### Stage4补充：方案B——旧LiteLLM模型导入与模型账号公网白名单（可选）
+
+适用于模型账号不建私有端点（`azureOpenAIConnections[].privateEndpoint=false`）的场景：新环境经Azure Firewall公网出口、以托管身份访问`https://<account>.openai.azure.com`，账号侧用IP白名单限制来源并关闭API Key。两个工具都在执行主机本地运行：导入工具完全离线，不调用Azure；网络工具的plan只读，只有`--execute`加已审核的`planSha256`才写Azure。
+
+1. 只读导出旧配置和账号清单（执行身份需对所有模型订阅有Reader）：
+
+```bash
+mkdir -p temp/legacy-import && chmod 700 temp/legacy-import
+kubectl -n "$LEGACY_NAMESPACE" get configmap litellm-config -o yaml > temp/legacy-import/legacy-configmap.yaml
+az graph query --first 1000 --output json -q "resources
+  | where type =~ 'microsoft.cognitiveservices/accounts'
+  | project id, name, resourceGroup, subscriptionId, location, kind,
+            customSubDomainName = tostring(properties.customSubDomainName)" > temp/legacy-import/accounts.json
+chmod 600 temp/legacy-import/*
+```
+
+Resource Graph输出带`skip_token`（分页未取全）时工具拒绝。也可用每个订阅的`az cognitiveservices account list`结果合并成一个JSON数组，或手工维护`{"<accountName>": {"subscriptionId": "...", "resourceGroupName": "..."}}`。
+
+2. 生成配置片段：
+
+```bash
+.venv/bin/python -m scripts.legacy_model_import \
+  --legacy-config temp/legacy-import/legacy-configmap.yaml \
+  --accounts temp/legacy-import/accounts.json \
+  --output-dir temp/legacy-import/out \
+  --base-model gpt-6-astra=gpt-6-astra --base-model DeepSeek-V4-Flash=DeepSeek-V4-Flash
+```
+
+- `model-fragments.json`：`parameters.platform.azureOpenAIConnections`每个账号一条（alias为`aoai-<资源ID哈希>`，默认`privateEndpoint=false`，`--private-endpoint`改为true）；`application.models`每个旧deployment一条，保留`api_version`；旧`model_info.id`合法时原样保留以延续Spend Logs，否则生成稳定的`legacy-<哈希>`（`--regenerate-ids`强制重新生成）。`baseModel`依次取旧`base_model`、`--base-model GROUP=MODEL`、可选`--deployments`（合并后的`az cognitiveservices account deployment list`输出）；同组混用不同底层模型时拒绝。
+- `import-summary.json`：按模型组/账号的数量、订阅和区域、未携带字段名（只列名称不列值，如`tenant_id`、`weight`）、从`litellm_params`移到`model_info`的价格字段、未导入的顶层段（`router_settings`/`litellm_settings`/`general_settings`需另行按`runtimeSettings`审核）、告警和错误，以及渲染后的`model_list`字节数。6组×41个deployment共246条时，后端ConfigMap约98KB，远低于1MiB上限。
+- 出现`api_key`、`azure_ad_token`、`client_secret`、含Key的headers或除`AZURE_CLIENT_ID`/`AZURE_TENANT_ID`/`AZURE_AUTHORITY_HOST`以外的`os.environ/`引用时，工具退出码1、不生成片段，且不会输出任何凭据值；先与客户确认并从旧配置中移除，必要时轮换。
+- 将连接片段写入Stage4配置、模型片段写入Stage6配置（替换对应数组），再按常规plan/execute。Stage4 platform会为每个账号分配`Cognitive Services OpenAI User`并把`<account>.openai.azure.com`加入Firewall白名单，执行身份需要各模型RG的附录最小角色。
+
+3. Stage4 platform完成后，收紧模型账号网络。执行前必须由客户书面确认：
+
+- **没有其他系统仍使用这些账号的API Key**（旧LiteLLM、批处理脚本、其他应用、Portal/Foundry Playground等）。`disableLocalAuth=true`后所有Key调用立即失败。无法确认时先加`--keep-local-auth`只收紧网络，观察后再单独关闭Key。
+- `defaultAction=Deny`后，不在白名单内的公网调用全部被拒。并行canary期间旧系统若经公网访问这些账号，用额外的`--egress-ip`同时列入旧系统出口IP；Firewall有多个公网IP时全部列入。
+
+```bash
+FW_IP="$(az network public-ip show --subscription "$SUBSCRIPTION_ID" --resource-group "$TARGET_RG" \
+  --name "pip-afw-litellm-${ENVIRONMENT_NAME}" --query ipAddress --output tsv)"
+.venv/bin/python -m scripts.model_account_network \
+  --accounts-file temp/legacy-import/out/model-fragments.json \
+  --egress-ip "$FW_IP" --output-dir temp/model-network
+```
+
+plan对每个账号执行`az resource show`（api-version 2024-10-01），输出`summary.json`（`planSha256`、逐账号update/keep、拒绝原因）、`plan.json`和私有的`rollback-snapshot.json`（原`publicNetworkAccess`、`networkAcls`、`disableLocalAuth`）。以下情况默认拒绝，审核后才可显式放行：已有私有端点连接（`--allow-private-endpoints`，不改动这些连接）、已有`virtualNetworkRules`（`--clear-virtual-network-rules`）、Deny下还有其他IP（补`--egress-ip`或`--remove-ip-rules`）、当前`publicNetworkAccess=Disabled`（`--enable-public-access`）。`--accounts-file`读取片段时只取`privateEndpoint=false`的连接，也可用`--account-id`逐个指定。
+
+审核后以**相同参数和相同`--output-dir`**执行；执行时重新读取状态，任何漂移都会改变哈希而被拒绝：
+
+```bash
+.venv/bin/python -m scripts.model_account_network \
+  --accounts-file temp/legacy-import/out/model-fragments.json \
+  --egress-ip "$FW_IP" --output-dir temp/model-network \
+  --execute --approved-plan-sha256 "REPLACE_MODEL_NETWORK_PLAN_SHA256"
+```
+
+每个账号经`az rest --method patch`设置`publicNetworkAccess=Enabled`、`networkAcls`（Deny+egress IP，保留原`bypass`）和`disableLocalAuth=true`，再轮询到Succeeded且状态与计划一致；进度写入`execute-receipt.json`。执行身份需在各账号临时具备`Microsoft.CognitiveServices/accounts/write`（如Cognitive Services Contributor），完成后回收。网络规则生效可能有数分钟延迟；随后经新网关对每个模型组做冒烟测试，并从非白名单地址或使用Key验证被拒绝。
+
+4. 回滚：用plan生成的快照，同样先plan后execute：
+
+```bash
+.venv/bin/python -m scripts.model_account_network \
+  --rollback-snapshot temp/model-network/rollback-snapshot.json --output-dir temp/model-network-rollback
+.venv/bin/python -m scripts.model_account_network \
+  --rollback-snapshot temp/model-network/rollback-snapshot.json --output-dir temp/model-network-rollback \
+  --execute --approved-plan-sha256 "REPLACE_ROLLBACK_PLAN_SHA256"
+```
+
+回滚恢复快照中的原网络规则和本地认证设置；已一致的账号标记为keep。变更验收前把快照保存在受控位置。部分账号执行失败后重新plan时，工具不会覆盖同目录已有的不同快照，须换新的`--output-dir`，并保留第一份快照用于回滚。
+
 ### Stage5：PostgreSQL、Redis、后台秘密与数据库初始化
 
 **客户模式按步骤使用IT部署账号、PG管理员和migration/runtime身份；验证模式除可选的独立database UAMI外继续使用operator。** Stage5开始前：

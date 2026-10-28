@@ -58,7 +58,7 @@ jobs:
           python -m unittest tests.test_runtime_secrets tests.test_backend_access
           python -m unittest tests.test_backend_manifest
           python -m unittest tests.test_optional_l3
-          python -m unittest tests.test_model_sync tests.test_model_sync_evidence tests.test_model_configuration
+          python -m unittest tests.test_model_sync tests.test_model_sync_evidence tests.test_model_configuration tests.test_legacy_model_import tests.test_model_account_network
           mkdir -p temp/model-sync-ci
           chmod 700 temp/model-sync-ci
           az bicep build --file infra/model-sync/main.bicep --outfile temp/model-sync-ci/main.json

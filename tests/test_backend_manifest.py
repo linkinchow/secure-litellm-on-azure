@@ -1,3 +1,4 @@
+import ast
 import copy
 import hashlib
 import json
@@ -9,7 +10,7 @@ from unittest.mock import Mock, patch
 
 import yaml
 
-from scripts.backend_manifest import application_authentication, application_settings, prepare_backend_documents, render_backend_manifest, verify_runtime_image
+from scripts.backend_manifest import BACKEND_CALLBACKS, application_authentication, application_settings, prepare_backend_documents, render_backend_manifest, verify_runtime_image
 from scripts.customer_migration import ROOT, stage_fingerprint, validate_config
 from scripts.migration_deploy import group_id
 from scripts.runtime_secrets import BACKEND_SECRETS, backend_secrets
@@ -139,6 +140,39 @@ class BackendManifestTests(unittest.TestCase):
             native_audit_settings({**config, "auditRuntime": {}})
         with self.assertRaisesRegex(ValueError, "L3 bindings"):
             native_audit_settings({**config, "proxy": {"bindings": [{"auditTeamId": "preserve-existing"}]}})
+
+    def test_native_logging_accepts_only_reviewed_request_callbacks(self):
+        config = backend_customer()
+        config["application"]["authentication"] = {"mode": "native", "adminUsername": "gateway-admin"}
+        config["contentAudit"] = {"mode": "native", "retentionDays": 14, "contentPolicyAccepted": True}
+
+        def source(settings):
+            runtime = {"litellm_settings": settings, "general_settings": {"store_prompts_in_spend_logs": False}}
+            return [{"kind": "ConfigMap", "metadata": {"name": "litellm-config-old"}, "data": {"config.yaml": yaml.safe_dump(runtime)}}]
+
+        result = render_native_audit(config, source({"callbacks": list(BACKEND_CALLBACKS)}))
+        self.assertEqual(yaml.safe_load(result[0]["data"]["config.yaml"])["litellm_settings"]["callbacks"], list(BACKEND_CALLBACKS))
+        render_native_audit(config, source({"callbacks": []}))
+        for settings in ({"callbacks": [*BACKEND_CALLBACKS, "custom_logger.instance"]}, {"callbacks": "custom_logger.instance"},
+                         {"callbacks": [{"name": "custom"}]}, {"callbacks": list(BACKEND_CALLBACKS), "success_callback": ["langfuse"]}):
+            with self.subTest(settings=settings), self.assertRaisesRegex(ValueError, "content callbacks"):
+                render_native_audit(config, source(settings))
+
+    def test_backend_callbacks_are_shipped_in_the_runtime_image(self):
+        self.assertEqual(BACKEND_CALLBACKS, ("LiteLLM.runtime.callbacks.codex_passthrough",))
+        dockerfile = (ROOT / "LiteLLM/runtime/Dockerfile").read_text()
+        self.assertIn("COPY --chown=10001:10001 LiteLLM/runtime /opt/llmgw/LiteLLM/runtime", dockerfile)
+        self.assertIn("ENV PYTHONPATH=/opt/llmgw", dockerfile)
+        self.assertIn("!LiteLLM/runtime/*.py", (ROOT / "LiteLLM/runtime/Dockerfile.dockerignore").read_text().splitlines())
+        for name in BACKEND_CALLBACKS:
+            module, attribute = name.rsplit(".", 1)
+            source = ROOT / (module.replace(".", "/") + ".py")
+            self.assertEqual(source.parent, ROOT / "LiteLLM/runtime")
+            assigned = {target.id for node in ast.parse(source.read_text()).body if isinstance(node, ast.Assign)
+                        for target in node.targets if isinstance(target, ast.Name)}
+            self.assertIn(attribute, assigned)
+        stage6 = yaml.safe_load(yaml.safe_load((ROOT / "deploy/components/stage6-ha/config-patch.yaml").read_text())["data"]["config.yaml"])
+        self.assertNotIn("callbacks", stage6["litellm_settings"], "The public-image Kustomize baseline cannot import runtime-image callbacks")
 
     def test_application_config_only_changes_stage6_fingerprint(self):
         config = backend_customer()
@@ -275,6 +309,7 @@ class BackendManifestTests(unittest.TestCase):
         self.assertTrue(runtime["general_settings"]["disable_prisma_schema_update"])
         self.assertTrue(runtime["router_settings"]["cache_kwargs"]["azure_redis_ad_token"])
         self.assertTrue(runtime["router_settings"]["cache_kwargs"]["ssl_check_hostname"])
+        self.assertEqual(runtime["litellm_settings"], {"enable_azure_ad_token_refresh": True, "callbacks": ["LiteLLM.runtime.callbacks.codex_passthrough"]})
         self.assertEqual(runtime["model_list"][0]["litellm_params"]["api_base"], "https://synthetic-model.openai.azure.com")
         traffic = next(item for item in documents if item["kind"] == "NetworkPolicy" and item["metadata"]["name"] == "allow-litellm-required-traffic")
         self.assertNotIn("namespaceSelector", json.dumps(traffic["spec"]["ingress"]))

@@ -21,23 +21,34 @@ RUNTIME_CONTRACT = {
     "gpt6": {"gpt-6.1": True, "azure/gpt-6.1": True},
     "catalog": {"azure/gpt-6-astra": True, "azure/gpt-6-sol": True, "azure/gpt-6-luna": True},
     "customDeploymentConfig": "AzureOpenAIGPT5Config",
+    "callbacks": {"LiteLLM.runtime.callbacks.codex_passthrough": True},
 }
-RUNTIME_CONTRACT_SCRIPT = """import importlib.metadata as metadata
+RUNTIME_CONTRACT_SCRIPT = """import asyncio
+import importlib.metadata as metadata
 import json
 import os
 import litellm
+from litellm.integrations.custom_logger import CustomLogger
 from litellm.llms.openai.chat.gpt_5_transformation import OpenAIGPT5Config
-from litellm.types.utils import LlmProviders
+from litellm.proxy.types_utils.utils import get_instance_fn
+from litellm.types.utils import CallTypes, LlmProviders
 from litellm.utils import ProviderConfigManager
 models = ("gpt-6.1", "azure/gpt-6.1")
 catalog = ("azure/gpt-6-astra", "azure/gpt-6-sol", "azure/gpt-6-luna")
 custom = ProviderConfigManager.get_provider_chat_config(model="azure/custom-deployment", provider=LlmProviders.AZURE, base_model="azure/gpt-6.1")
+def callback(name):
+    hook = get_instance_fn(value=name, config_file_path="/app/config/config.yaml")
+    item = {"type": "message", "internal_chat_message_metadata_passthrough": {"content_item_metadata": []}}
+    stripped = asyncio.run(hook.async_pre_call_deployment_hook({"input": [item]}, CallTypes.aresponses))
+    other = asyncio.run(hook.async_pre_call_deployment_hook({"input": [item]}, CallTypes.acompletion))
+    return isinstance(hook, CustomLogger) and stripped == {"input": [{"type": "message"}]} and other is None and len(item) == 2
 print(json.dumps({
     "uid": os.getuid(),
     "versions": {name: metadata.version(name) for name in ("litellm", "anyio", "PyJWT")},
     "gpt6": {name: OpenAIGPT5Config.is_model_gpt_6_plus_model(name) for name in models},
     "catalog": {name: name in litellm.model_cost for name in catalog},
     "customDeploymentConfig": type(custom).__name__,
+    "callbacks": {name: callback(name) for name in ("LiteLLM.runtime.callbacks.codex_passthrough",)},
 }))
 """
 
@@ -139,7 +150,7 @@ def check_source(directory, revision, run=subprocess.run):
             document = json.loads(result.stdout)
             require(isinstance(document, dict), "Tool output must be a JSON object")
             if name == "runtime":
-                require(document == RUNTIME_CONTRACT, "Runtime version, security dependency or GPT-6 model contract differs from the reviewed release")
+                require(document == RUNTIME_CONTRACT, "Runtime version, security dependency, GPT-6 model or shipped callback contract differs from the reviewed release")
             elif name == "sbom":
                 require(document.get("spdxVersion") and isinstance(document.get("packages"), list) and document["packages"], "Incomplete SPDX inventory")
             else:

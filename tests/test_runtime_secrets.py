@@ -50,6 +50,7 @@ class RuntimeSecretTests(unittest.TestCase):
             connection = stack.enter_context(patch("psycopg.connect"))
             connection.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value.fetchone.return_value = (False,)
             stack.enter_context(patch("scripts.runtime_secrets.subprocess.run", return_value=SimpleNamespace(returncode=0, stdout="synthetic-db-token")))
+            stack.enter_context(patch("scripts.runtime_secrets.runtime_revision", return_value="9" * 64))
             stack.enter_context(patch("scripts.runtime_secrets.inspect_backend_secrets", return_value=({}, {name: None for name in BACKEND_SECRETS})))
             apply = stack.enter_context(patch("scripts.runtime_secrets.apply_backend_secrets", return_value=versions))
             random = stack.enter_context(patch("scripts.runtime_secrets.secrets.token_urlsafe"))
@@ -68,6 +69,8 @@ class RuntimeSecretTests(unittest.TestCase):
             self.assertTrue(result["initialized"])
             self.assertFalse(result["stageAccepted"])
             self.assertTrue((path / "backend-access.json").exists())
+            receipt = json.loads((path / "backend-secret-receipt.json").read_text())["outputs"]["backendSecrets"]["value"]
+            self.assertEqual((receipt["revision"], receipt["runtimeRevision"]), ("a" * 40, "9" * 64))
             for artifact in path.glob("*.json"):
                 self.assertNotIn("synthetic-db-token", artifact.read_text())
 
@@ -107,6 +110,7 @@ class RuntimeSecretTests(unittest.TestCase):
             connection = stack.enter_context(patch("psycopg.connect"))
             connection.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value.fetchone.return_value = (False,)
             stack.enter_context(patch("scripts.runtime_secrets.subprocess.run", return_value=SimpleNamespace(returncode=0, stdout="synthetic-db-token")))
+            stack.enter_context(patch("scripts.runtime_secrets.runtime_revision", return_value="9" * 64))
             stack.enter_context(patch("scripts.runtime_secrets.inspect_backend_secrets", return_value=({}, {name: None for name in BACKEND_SECRETS})))
             read = stack.enter_context(patch("scripts.runtime_secrets.read_legacy_keys"))
             for source in ("secret", "master-key"):

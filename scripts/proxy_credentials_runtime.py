@@ -15,6 +15,7 @@ from scripts.migration_deploy import AzureCommands, deployment_name, group_id
 from scripts.migration_runtime import connect_cluster, run_command
 from scripts.proxy_config import object_id
 from scripts.proxy_credentials import credential_bindings, inspect_binding, provision_binding
+from scripts.runtime_revision import receipt_current, runtime_revision
 
 
 @contextmanager
@@ -124,7 +125,7 @@ def initialize_proxy_credentials(config, operation, revision, directory, approve
     secret_output = azure.scoped(["deployment", "group", "show", "--resource-group", group, "--name", deployment_name(config, 5, "backend-secrets"), "--query", "{state:properties.provisioningState,receipt:properties.outputs.backendSecrets.value}"])
     require(secret_output.get("state") == "Succeeded", "Initialize backend secrets first")
     receipt = secret_output["receipt"]
-    require(receipt.get("revision") == revision and receipt.get("configSha256") == stage_fingerprint(config, 5), "Backend secret receipt is stale")
+    require(receipt_current(receipt, revision, runtime_revision("azure", revision)) and receipt.get("configSha256") == stage_fingerprint(config, 5), "Backend secret receipt is stale")
     require(receipt["vaultId"].lower() == (group_id(config) + "/providers/Microsoft.KeyVault/vaults/" + receipt["vaultName"]).lower(), "Backend Vault scope mismatch")
     deployment = json.loads(run_command([*kube, "get", "deployment", "litellm", "-o", "json"], directory, "backend-bootstrap-deployment"))
     containers = deployment["spec"]["template"]["spec"]["containers"]

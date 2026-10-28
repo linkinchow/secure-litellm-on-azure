@@ -1458,7 +1458,7 @@ restore-target只恢复到Stage5输出绑定的**空目标库**，不使用手�
 
 ### 阶段6：HA、路由与容量
 
-**开始前：** Stage5已验收；无需新的GitHubSecret。确认Stage4得到的派生后台镜像签名仍绑定当前仓库、代码SHA和environment；若代码变过，应重新处理相关证据与镜像，不只改镜像字段。未提前构建时先按Stage4的Promote填写方式构建，不能使用上游默认入口镜像代替Azure派生运行时。
+**开始前：** Stage5已验收；无需新的GitHubSecret。确认Stage4得到的派生后台镜像签名仍绑定当前仓库、environment及当前后端运行时修订（`llmgw.runtimeRevision`）；只有`LiteLLM/runtime/**`、`scripts/source_supply_chain.py`或`scripts/schema_runtime.py`变化时才需重新构建镜像并刷新Stage5回执，不只改镜像字段。未提前构建时先按Stage4的Promote填写方式构建，不能使用上游默认入口镜像代替Azure派生运行时。
 
 客户JSON增加application，填成功晋级后的digest和实际模型映射：
 
@@ -1662,7 +1662,7 @@ DNS回退为同runtime、stage=9、action=dns-rollback，另跑plan/execute并�
 | backup-restore: execution-failed且POSTGRES_RESTORE_IMAGE为空 | Stage0新增镜像Variable，完整repo@sha256引用 | 按0-B获取，不填备份SHA或IMAGE ID，不运行plan |
 | backup-restore在plan失败 | 该动作只有execute | 先完成备份前置，再直接execute并确认环境 |
 | deploy/execute批准字段为空或run ID填到hash框 | 页面两个description标签 | 把数字填入Successful matching ... plan run ID，Legacy direct hash框留空 |
-| stale / plan changed / 签名或回执版本不符 | plan/execute是否同代码、配置、实际资源；镜像签名是否当前revision/environment | 修配置后重新plan/审核；不复制新哈希越过检查 |
+| stale / plan changed / 签名或回执版本不符 | plan/execute是否同代码、配置、实际资源；镜像签名和Stage5回执是否为当前运行时修订/environment（`python -m scripts.runtime_revision --runtime azure`） | 修配置后重新plan/审核；不复制新哈希越过检查 |
 | Azure 403 / Kubernetes Forbidden / PG拒绝 | 本动作实际身份和具体资源范围，ARM/数据平面/Kubernetes/PG分别授权 | 找对应Owner补最小权限；不因为登录成功就授予Owner兜底 |
 | Blob解析公网IP或上传超时 | 管理VNet到备份PE路由、Private DNS、NSG及Blob数据角色 | 不开放Storage公网、不把NAT视为私网接通 |
 | bootstrap plan在旧版本报通用执行错误 | 是否已包含处理What-if delta:null的修复 | 合并修复后新Run workflow，不能重跑旧SHA任务 |

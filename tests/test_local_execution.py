@@ -586,13 +586,20 @@ class LocalExecutionTests(unittest.TestCase):
                     output = json.dumps([{"critical": {"identity": {"docker-reference": "customerregistry.azurecr.io/litellm-azure"}}}])
                 return subprocess.CompletedProcess(arguments, 0, output, "")
 
-            with patch.dict(os.environ, {"COSIGN_PASSWORD": "not-recorded"}):
+            with patch.dict(os.environ, {"COSIGN_PASSWORD": "not-recorded"}), patch("local_execution.image_supply_chain.build_runtime_revision", return_value="c" * 64) as runtime:
                 summary = promote_image(config, settings, "f" * 40, "backend", directory, run=run)
             self.assertTrue(summary["signatureVerified"])
+            self.assertEqual(summary["runtimeRevision"], "c" * 64)
+            self.assertEqual([call.args for call in runtime.call_args_list], [("azure", "f" * 40)] * 2)
+            signing = next(arguments for arguments, _ in calls if arguments[:2] == ["cosign", "sign"])
+            self.assertIn("llmgw.revision=" + "f" * 40, signing)
+            self.assertIn("llmgw.runtimeRevision=" + "c" * 64, signing)
             self.assertFalse((directory / "docker-config/config.json").exists())
             self.assertNotIn("private-token", str(calls))
             self.assertNotIn("not-recorded", str(calls[:-2]))
             self.assertEqual(calls[-1][1]["COSIGN_PASSWORD"], "not-recorded")
+            with patch.dict(os.environ, {"COSIGN_PASSWORD": "not-recorded"}), patch("local_execution.image_supply_chain.build_runtime_revision", side_effect=["c" * 64, "e" * 64]), self.assertRaisesRegex(ValueError, "changed during promotion"):
+                promote_image(config, settings, "f" * 40, "backend", directory, run=run)
 
     def test_backup_restore_reads_image_from_local_settings(self):
         config, settings = self.prepared()
@@ -655,7 +662,7 @@ class LocalExecutionTests(unittest.TestCase):
         for dependency in ("-r ../requirements.txt", "acme==5.8.0", "dnspython==2.8.0", "josepy==2.2.0"):
             self.assertIn(dependency, requirements)
         self.assertIn("local_execution/requirements.txt", guide)
-        for value in ("BACKEND_IMAGE_SUMMARY", "BACKEND_IMAGE_PREFIX", "BACKEND_DIGEST", ".signatureVerified == true", "CURRENT_REVISION=\"$(git rev-parse HEAD)\"", "${BACKEND_IMAGE##*@sha256:}", "REPLACE_BUILT_64_HEX_DIGEST"):
+        for value in ("BACKEND_IMAGE_SUMMARY", "BACKEND_IMAGE_PREFIX", "BACKEND_DIGEST", ".signatureVerified == true", "CURRENT_REVISION=\"$(git rev-parse HEAD)\"", "CURRENT_RUNTIME_REVISION=\"$(.venv/bin/python -m scripts.runtime_revision --runtime azure)\"", ".runtimeRevision == $runtime_revision", "(.runtimeRevision == null and .revision == $revision)", "${BACKEND_IMAGE##*@sha256:}", "REPLACE_BUILT_64_HEX_DIGEST"):
             self.assertIn(value, later_guide)
         for value in ("--option native-auth", "仅新增`litellm-ui-password=generate`", "Master Key继续不向任何人工用户", "--resolve \"llm-api.${BASE_DOMAIN}:443:${API_PRIVATE_IP}\"", "native_virtual_key_acl", "私有Admin LB仅作Front Door回源"):
             self.assertIn(value, later_guide)

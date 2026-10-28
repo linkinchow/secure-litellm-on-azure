@@ -15,9 +15,10 @@ from urllib.parse import urlencode, urlunsplit
 import yaml
 
 from scripts.backend_access import render_backend_access
-from scripts.customer_migration import ROOT, availability_zones, configured, private_write, require, spread_across_zones, stage_fingerprint
+from scripts.customer_migration import ROOT, MigrationError, availability_zones, configured, private_write, require, spread_across_zones, stage_fingerprint
 from scripts.model_configuration import connection_endpoint, rendered_models, validate_options
 from scripts.runtime_configuration import apply_runtime_settings, runtime_overrides
+from scripts.runtime_revision import receipt_current, runtime_revision, signature_binding
 
 
 # Callbacks shipped in the reviewed runtime image (LiteLLM/runtime/callbacks.py). They only adjust
@@ -138,12 +139,14 @@ def prepare_backend_documents(config, revision, directory, azure, image_public_k
     platform_output = azure.scoped(["deployment", "group", "show", "--resource-group", group, "--name", deployment_name(config, 5, "platform"), "--query", "{state:properties.provisioningState,platform:properties.outputs.platform.value}"])
     require(platform_output.get("state") == "Succeeded" and platform_output.get("platform", {}).get("stage5Deployed") is True, "Deploy Stage5 platform before generating the backend")
     platform = platform_output["platform"]
+    # Stage5 receipts follow the backend runtime revision: schema and secrets stay valid across unrelated commits.
+    runtime = runtime_revision("azure", revision)
     receipts = {}
     for component, output_name in (("schema-migrate", "databaseSchema"), ("backend-secrets", "backendSecrets")):
         result = azure.scoped(["deployment", "group", "show", "--resource-group", group, "--name", deployment_name(config, 5, component), "--query", "{state:properties.provisioningState,receipt:properties.outputs." + output_name + ".value}"])
         require(result.get("state") == "Succeeded", "Complete schema and backend secret initialization before generating the application")
         receipt = result["receipt"]
-        require(receipt.get("revision") == revision and receipt.get("configSha256") == stage_fingerprint(config, 5), "Stage5 receipt is stale or belongs to different code/configuration")
+        require(receipt_current(receipt, revision, runtime) and receipt.get("configSha256") == stage_fingerprint(config, 5), "Stage5 receipt is stale or belongs to a different runtime revision/configuration")
         receipts[component] = receipt
     expected_server = group_id(config) + "/providers/Microsoft.DBforPostgreSQL/flexibleServers/" + platform["postgresqlServerName"]
     require(receipts["schema-migrate"]["serverId"].lower() == expected_server.lower() and receipts["schema-migrate"]["database"] == config["parameters"]["platform"]["stage5Data"]["postgresqlDatabaseName"], "Schema receipt targets a different database")
@@ -163,6 +166,7 @@ def verify_runtime_image(config, revision, directory, image, runtime, *, public_
     from scripts.migration_runtime import run_command
 
     require(runtime in {"azure", "auth-proxy", "collector"}, "Unapproved runtime signature type")
+    current = runtime_revision(runtime, revision)
     if public_key is not None:
         supplied_key = Path(public_key)
         require(not supplied_key.is_symlink(), "Local image verification does not accept a symlinked Cosign public key")
@@ -188,7 +192,16 @@ def verify_runtime_image(config, revision, directory, image, runtime, *, public_
     encoded = base64.b64encode(("00000000-0000-0000-0000-000000000000:" + credentials["accessToken"]).encode()).decode()
     private_write(auth_file, json.dumps({"auths": {credentials["loginServer"]: {"auth": encoded}}}))
     try:
-        run_command(["cosign", "verify", *verification, "-a", "llmgw.runtime=" + runtime, "-a", "llmgw.revision=" + revision, "-a", "llmgw.environment=" + config["environment"], image], directory, runtime + "-image-signature", environment={**os.environ, "DOCKER_CONFIG": str(auth_directory)})
+        output = run_command(["cosign", "verify", *verification, "-a", "llmgw.runtime=" + runtime, "-a", "llmgw.environment=" + config["environment"], image], directory, runtime + "-image-signature", environment={**os.environ, "DOCKER_CONFIG": str(auth_directory)})
     finally:
         auth_file.unlink(missing_ok=True)
         credential_directory.cleanup()
+    try:
+        signatures = json.loads(output)
+    except ValueError:
+        raise MigrationError("Cosign verification returned invalid JSON") from None
+    # llmgw.runtimeRevision must equal the reviewed inputs at this commit; signatures made before it existed are
+    # accepted only for the exact commit (llmgw.revision), as before.
+    binding = signature_binding(signatures, image, runtime, config["environment"], revision, current)
+    require(binding is not None, f"The {runtime} image signature does not match runtime revision {current[:12]} of this commit; rebuild and re-sign the image")
+    return {"binding": binding, "runtimeRevision": current}

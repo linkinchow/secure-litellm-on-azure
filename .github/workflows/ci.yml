@@ -57,7 +57,7 @@ jobs:
           python -m unittest tests.test_azure_postgresql
           python -m unittest tests.test_azure_application tests.test_schema_migration tests.test_schema_runtime tests.test_codex_passthrough
           python -m unittest tests.test_runtime_secrets tests.test_backend_access
-          python -m unittest tests.test_backend_manifest
+          python -m unittest tests.test_backend_manifest tests.test_runtime_revision
           python -m unittest tests.test_optional_l3
           python -m unittest tests.test_model_sync tests.test_model_sync_evidence tests.test_model_configuration tests.test_legacy_model_import tests.test_model_account_network
           mkdir -p temp/model-sync-ci

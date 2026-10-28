@@ -11,6 +11,7 @@ from uuid import UUID
 
 from scripts.customer_migration import deployment_mode, fingerprint, private_write, require, stage_fingerprint
 from scripts.migration_deploy import AzureCommands, deployment_name, group_id
+from scripts.runtime_revision import runtime_revision
 
 
 BACKEND_SECRETS = {"litellm-master-key": "LITELLM_MASTER_KEY", "litellm-salt-key": "LITELLM_SALT_KEY"}
@@ -167,7 +168,7 @@ def initialize_backend_secrets(config, operation, revision, directory, approved)
             ensure_key_creation_is_safe(mode, existing, has_tables, required_secrets)
             if mode == "migration":
                 backend_secret_values(mode, existing, legacy, required_secrets)
-            plan = {"stage": 5, "action": "backend-secrets", "revision": revision, "configSha256": stage_fingerprint(config, 5), "vaultId": vault["id"], "source": source, "before": metadata, "databaseHasTables": has_tables, "actions": {name: "keep" if name in existing else ("import" if mode == "migration" and name in BACKEND_SECRETS else "generate") for name in required_secrets}}
+            plan = {"stage": 5, "action": "backend-secrets", "revision": revision, "runtimeRevision": runtime_revision("azure", revision), "configSha256": stage_fingerprint(config, 5), "vaultId": vault["id"], "source": source, "before": metadata, "databaseHasTables": has_tables, "actions": {name: "keep" if name in existing else ("import" if mode == "migration" and name in BACKEND_SECRETS else "generate") for name in required_secrets}}
             digest = fingerprint(plan)
             summary = {"stage": 5, "action": "backend-secrets", "planSha256": digest, "stageAccepted": False}
             private_write(directory / "runtime-review.json", json.dumps(plan, indent=2) + "\n")
@@ -179,7 +180,7 @@ def initialize_backend_secrets(config, operation, revision, directory, approved)
 
                 access = render_backend_access(config, platform, versions)
                 private_write(directory / "backend-access.json", json.dumps(access, indent=2) + "\n")
-                receipt = {"revision": revision, "configSha256": stage_fingerprint(config, 5), "vaultId": vault["id"], "vaultName": platform["keyVaultName"], "secrets": versions, "verifiedAt": datetime.now(timezone.utc).isoformat()}
+                receipt = {"revision": revision, "runtimeRevision": plan["runtimeRevision"], "configSha256": stage_fingerprint(config, 5), "vaultId": vault["id"], "vaultName": platform["keyVaultName"], "secrets": versions, "verifiedAt": datetime.now(timezone.utc).isoformat()}
                 document = {"$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#", "contentVersion": "1.0.0.0", "resources": [], "outputs": {"backendSecrets": {"type": "object", "value": receipt}}}
                 path = directory / "backend-secret-receipt.json"
                 private_write(path, json.dumps(document))

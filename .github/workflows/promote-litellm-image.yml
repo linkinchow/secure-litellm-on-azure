@@ -86,6 +86,18 @@ jobs:
         with:
           python-version: '3.13'
       - run: python -m pip install PyYAML==6.0.3 cryptography==50.0.1
+      - name: Compute the runtime revision of the reviewed build inputs
+        id: runtime
+        if: inputs.build_azure_runtime || inputs.build_auth_proxy
+        env:
+          BUILD_AZURE_RUNTIME: ${{ inputs.build_azure_runtime }}
+        run: |
+          runtime=auth-proxy
+          [[ "$BUILD_AZURE_RUNTIME" != true ]] || runtime=azure
+          revision="$(python -m scripts.runtime_revision --runtime "$runtime" --revision "$GITHUB_SHA" --require-clean)"
+          [[ "$revision" =~ ^[0-9a-f]{64}$ ]]
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+
       - name: Check encrypted evidence and isolate registry credentials
         run: |
           python -m scripts.workflow_security check-key
@@ -177,11 +189,12 @@ jobs:
           BUILD_AZURE_RUNTIME: ${{ inputs.build_azure_runtime }}
           BUILD_AUTH_PROXY: ${{ inputs.build_auth_proxy }}
           CUSTOMER_ENVIRONMENT: ${{ inputs.environment }}
+          RUNTIME_REVISION: ${{ steps.runtime.outputs.revision }}
         run: |
           if [[ "$BUILD_AZURE_RUNTIME" == true ]]; then
-            cosign sign --yes -a llmgw.runtime=azure -a "llmgw.revision=$GITHUB_SHA" -a "llmgw.environment=$CUSTOMER_ENVIRONMENT" "$IMAGE_REFERENCE"
+            cosign sign --yes -a llmgw.runtime=azure -a "llmgw.revision=$GITHUB_SHA" -a "llmgw.runtimeRevision=$RUNTIME_REVISION" -a "llmgw.environment=$CUSTOMER_ENVIRONMENT" "$IMAGE_REFERENCE"
           elif [[ "$BUILD_AUTH_PROXY" == true ]]; then
-            cosign sign --yes -a llmgw.runtime=auth-proxy -a "llmgw.revision=$GITHUB_SHA" -a "llmgw.environment=$CUSTOMER_ENVIRONMENT" "$IMAGE_REFERENCE"
+            cosign sign --yes -a llmgw.runtime=auth-proxy -a "llmgw.revision=$GITHUB_SHA" -a "llmgw.runtimeRevision=$RUNTIME_REVISION" -a "llmgw.environment=$CUSTOMER_ENVIRONMENT" "$IMAGE_REFERENCE"
           else
             cosign sign --yes "$IMAGE_REFERENCE"
           fi
@@ -192,16 +205,17 @@ jobs:
           BUILD_AZURE_RUNTIME: ${{ inputs.build_azure_runtime }}
           BUILD_AUTH_PROXY: ${{ inputs.build_auth_proxy }}
           CUSTOMER_ENVIRONMENT: ${{ inputs.environment }}
+          RUNTIME_REVISION: ${{ steps.runtime.outputs.revision }}
         run: |
           identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/promote-litellm-image.yml@${GITHUB_REF}"
           annotations=()
           runtime=source
           if [[ "$BUILD_AZURE_RUNTIME" == true ]]; then
             runtime=azure
-            annotations+=(-a llmgw.runtime=azure -a "llmgw.revision=$GITHUB_SHA" -a "llmgw.environment=$CUSTOMER_ENVIRONMENT")
+            annotations+=(-a llmgw.runtime=azure -a "llmgw.revision=$GITHUB_SHA" -a "llmgw.runtimeRevision=$RUNTIME_REVISION" -a "llmgw.environment=$CUSTOMER_ENVIRONMENT")
           elif [[ "$BUILD_AUTH_PROXY" == true ]]; then
             runtime=auth-proxy
-            annotations+=(-a llmgw.runtime=auth-proxy -a "llmgw.revision=$GITHUB_SHA" -a "llmgw.environment=$CUSTOMER_ENVIRONMENT")
+            annotations+=(-a llmgw.runtime=auth-proxy -a "llmgw.revision=$GITHUB_SHA" -a "llmgw.runtimeRevision=$RUNTIME_REVISION" -a "llmgw.environment=$CUSTOMER_ENVIRONMENT")
           fi
           verification="$RUNNER_TEMP/target-image-verification-$GITHUB_RUN_ID.json"
           cosign verify \
@@ -228,6 +242,7 @@ jobs:
               "repository": os.environ["GITHUB_REPOSITORY"],
               "ref": os.environ["GITHUB_REF"],
               "revision": os.environ["GITHUB_SHA"],
+              "runtimeRevision": os.environ["RUNTIME_REVISION"] or None,
               "environment": os.environ["CUSTOMER_ENVIRONMENT"],
               "image": os.environ["IMAGE_REFERENCE"],
               "runtime": os.environ["LLMGW_RUNTIME"],

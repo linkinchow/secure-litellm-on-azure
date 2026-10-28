@@ -8,11 +8,9 @@ from uuid import UUID
 
 import yaml
 
+from scripts.collector_image import COLLECTOR_DIGEST, COLLECTOR_SOURCE
 from scripts.customer_migration import ROOT, availability_zones, fingerprint, require, spread_across_zones
 from scripts.migration_deploy import deployment_name, group_id
-
-COLLECTOR_DIGEST = "sha256:8164eab2e6bca9c9b0837a8d2f118a6618489008a839db7f9d6510e66be3923c"
-COLLECTOR_SOURCE = "otel/opentelemetry-collector-contrib@" + COLLECTOR_DIGEST
 
 
 def telemetry_settings(config):

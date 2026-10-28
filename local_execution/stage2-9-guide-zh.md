@@ -402,6 +402,17 @@ unset COSIGN_PASSWORD
 
 本地镜像步骤会构建或导入、推送、解析不可变digest、生成SPDX SBOM、用Trivy阻断可修复CRITICAL、签名并以同一公钥回验。ACR Token只写入本次0700临时目录，并在结束时删除。
 
+签名同时带`llmgw.revision`（构建时Git commit，仅作溯源）和`llmgw.runtimeRevision`（运行时修订）。运行时修订是该镜像输入文件在当前commit中的Git路径、权限和blob的SHA256，按runtime分别计算：
+
+| runtime | 参与计算的文件 | 原因 |
+|---|---|---|
+| `azure`后端 | `LiteLLM/runtime/**`（`__pycache__`/`.pyc`除外） | Dockerfile固定上游digest和wheel校验和；`Dockerfile.dockerignore`、`security-requirements.txt`及全部运行时模块都会被COPY进镜像 |
+| | `scripts/source_supply_chain.py`、`scripts/schema_runtime.py` | 前者定义构建命令和镜像必须满足的`RUNTIME_CONTRACT`；后者运行镜像内迁移器，其结果就是Stage5 schema回执 |
+| `auth-proxy`代理 | `auth-proxy/`下的`Dockerfile`、`.dockerignore`、`package.json`、`package-lock.json`、`native-ui-routes.json`和顶层`*.mjs` | 即代理Dockerfile的全部COPY来源；`test/`、`entra/`和README不进镜像 |
+| `collector` | `scripts/collector_image.py` | collector是导入固定上游digest，不构建 |
+
+Stage6/7/8只要求签名中的运行时修订等于当前commit重新计算的值，因此只改文档、IaC、Stage9、清单生成或其他阶段代码的commit**不需要**重建、扫描、重签镜像，也不需要重跑Stage5；只有上表文件变化才需重新执行对应`promote-*-image`，后端变化时还须按当前代码刷新`stage5-schema-migrate`和`stage5-backend-secrets`回执。用`.venv/bin/python -m scripts.runtime_revision --runtime azure`（或`auth-proxy`、`collector`）查看当前值，追加`--list`列出参与计算的文件。镜像步骤和schema-migrate会拒绝这些路径中未提交、未跟踪或被Git忽略但会被COPY的文件，避免签名值与实际构建内容不符。本变更之前签名的镜像没有`llmgw.runtimeRevision`，仍只在`llmgw.revision`等于当前commit时被接受；缺少`runtimeRevision`的旧Stage5回执同理。
+
 ### 4.3 每个变更步骤都要执行plan和execute
 
 后文会为每个变更明确列出两条命令。第一条生成plan，最后一行会显示`result.planSha256`和`outputDirectory`；先审核`<outputDirectory>/plan/`中的`plan-summary.json`、`reviewed-plan.json`或`runtime-review.json`。确认无误后，把该64位哈希原样填入紧接着的execute命令：
@@ -651,10 +662,11 @@ AKS私有API证书由集群CA签发，检查器会从本次生成的kubeconfig�
 unset COSIGN_PASSWORD
 ```
 
-命令成功后，从本Runner的受控输出中选择**当前Git revision、当前environment、Azure后台runtime、签名已回验**的最新产物。不要使用旧revision的成功镜像，也不要从ACR tag猜digest：
+命令成功后，从本Runner的受控输出中选择**当前后端运行时修订、当前environment、Azure后台runtime、签名已回验**的最新产物。运行时修订相同的旧commit产物仍可用（见第4.2节）；不要使用运行时修订不同的镜像，也不要从ACR tag猜digest：
 
 ```bash
 CURRENT_REVISION="$(git rev-parse HEAD)"
+CURRENT_RUNTIME_REVISION="$(.venv/bin/python -m scripts.runtime_revision --runtime azure)"
 ENVIRONMENT_NAME="$(jq -er '.environment' local_execution/customer.json)"
 ACR_NAME="$(jq -er '.parameters.platform.containerRegistryName' \
   local_execution/customer.json)"
@@ -663,9 +675,11 @@ BACKEND_IMAGE_PREFIX="${ACR_NAME}.azurecr.io/litellm-azure@sha256:"
 BACKEND_IMAGE_SUMMARY=
 while IFS= read -r candidate; do
   if jq -e --arg revision "$CURRENT_REVISION" \
+      --arg runtime_revision "$CURRENT_RUNTIME_REVISION" \
       --arg environment "$ENVIRONMENT_NAME" \
       --arg prefix "$BACKEND_IMAGE_PREFIX" \
-      '.revision == $revision
+      '(.runtimeRevision == $runtime_revision
+        or (.runtimeRevision == null and .revision == $revision))
        and .environment == $environment
        and .runtime == "azure"
        and .signatureVerified == true
@@ -683,7 +697,7 @@ done < <(
 )
 
 if [[ -z "$BACKEND_IMAGE_SUMMARY" ]]; then
-  echo 'No verified backend image for the current revision/environment' >&2
+  echo 'No verified backend image for the current runtime revision/environment' >&2
   false
 else
   BACKEND_IMAGE="$(jq -er '.image' "$BACKEND_IMAGE_SUMMARY")"
@@ -694,7 +708,7 @@ else
 fi
 ```
 
-`Backend image`是完整不可变引用；`Stage6 digest value`输出的纯64位十六进制值才填写`REPLACE_BUILT_64_HEX_DIGEST`，不包含`sha256:`。镜像推送成功但扫描、签名或上述revision/environment核对失败时不得使用。
+`Backend image`是完整不可变引用；`Stage6 digest value`输出的纯64位十六进制值才填写`REPLACE_BUILT_64_HEX_DIGEST`，不包含`sha256:`。镜像推送成功但扫描、签名或上述运行时修订/environment核对失败时不得使用。
 
 8. 准备入口证书。客户已提供API/Admin两套`.pem`和`.key`时，按[客户证书导入Runbook](../docs/litellm-ingress-certificate-import-runbook-zh.md)核对目标Vault、合并并上传两个Secret；网络窗口及无证书时的申请说明按[Stage4证书导入步骤](../docs/customer-migration-guide-zh.md#4-c-部署后手动导入两个secret)上传`api-tls`和`admin-tls`。Stage9的Admin源站不得继续使用私网演练期间的自签名/企业CA证书，也不能靠给Runner或Laptop安装该CA放行；须先轮换为根位于Microsoft Trusted CA List中的公有链。入口计划使用独立`certifi`公有根包预检，不继承Runner本地附加CA。选择自动API证书时，先给当前客户账号或operator UAMI授予公共DNS zone的DNS Zone Contributor和证书Vault的Key Vault Secrets Officer，再执行：
 
@@ -1226,7 +1240,7 @@ az cognitiveservices account deployment list \
   --values local_execution/stage-6-values.local.json
 ```
 
-选择原生认证时，保持`localExecution.features.entraMode=deferred`，在Stage6 values文件同时填写`REPLACE_NATIVE_ADMIN_USERNAME`（例如`gateway-admin`），并给两条命令都追加`--option native-auth`。该用户名不是秘密。apply后、运行Stage6 application前，重新plan/execute `stage5-backend-secrets`：计划中原Master/Salt必须为`keep`，仅新增`litellm-ui-password=generate`。execute生成随机密码、固定版本并刷新Stage5回执，不输出正文；若计划尝试导入/替换Master或Salt就停止。随后还要按当前revision刷新`stage5-schema-migrate`回执，确认`pendingMigrations=0`。
+选择原生认证时，保持`localExecution.features.entraMode=deferred`，在Stage6 values文件同时填写`REPLACE_NATIVE_ADMIN_USERNAME`（例如`gateway-admin`），并给两条命令都追加`--option native-auth`。该用户名不是秘密。apply后、运行Stage6 application前，重新plan/execute `stage5-backend-secrets`：计划中原Master/Salt必须为`keep`，仅新增`litellm-ui-password=generate`。execute生成随机密码、固定版本并刷新Stage5回执，不输出正文；若计划尝试导入/替换Master或Salt就停止。随后还要按当前配置刷新`stage5-schema-migrate`回执（Stage5配置哈希已变化），确认`pendingMigrations=0`。
 
 由客户Key Vault管理员在Portal中打开后台Vault的`litellm-ui-password`当前版本，直接转存到客户批准的密码库，不把值复制到终端、工单、聊天、values或customer.json。Master Key继续不向任何人工用户或API调用方分发。当前自动化不提供UI密码轮换步骤；轮换须另立变更并重新绑定固定Secret版本。
 2. native路径先为当前配置重新plan/execute `stage4-private-ingress`：

@@ -112,7 +112,7 @@ export class Session {
       capture.add('response', data);
       if (['response.completed', 'response.failed', 'response.incomplete', 'error'].includes(String(event.type))) {
         const outcome = event.type === 'response.completed' && response.status === 'completed' ? 'completed'
-          : event.type === 'response.incomplete' ? 'incomplete' : 'failed';
+          : event.type === 'response.incomplete' ? 'incomplete' : 'response-error';
         capture.finish(outcome); this.all.delete(capture);
         this.pending = this.pending.filter(item => item !== capture);
         for (const [key, item] of this.active) if (item === capture) this.active.delete(key);

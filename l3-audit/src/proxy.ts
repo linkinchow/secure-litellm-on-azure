@@ -61,7 +61,7 @@ export function createProxy(upstream: URL, emit: Emit, counters: () => unknown):
             const value = object(JSON.parse(event.data));
             capture?.responseId(typeof value.type === 'string' ? object(value.response).id : value.id);
             if (value.type === 'response.completed' && object(value.response).status === 'completed') terminal = 'completed';
-            if (value.type === 'error' || value.type === 'response.failed') terminal = 'failed';
+            if (value.type === 'error' || value.type === 'response.failed') terminal = 'response-error';
             if (value.type === 'response.incomplete') terminal = 'incomplete';
           } catch { metadataHealthy = false; capture?.gap('invalid-sse-metadata'); }
         },
@@ -84,7 +84,7 @@ export function createProxy(upstream: URL, emit: Emit, counters: () => unknown):
         }
         if (!requestComplete) capture?.gap('request-not-complete');
         if (!sse) capture?.readResponse();
-        capture?.finish((incoming.statusCode ?? 500) >= 400 ? 'failed'
+        capture?.finish((incoming.statusCode ?? 500) >= 400 ? 'http-error'
           : sse && capture.bodyEncoding.response !== 'identity' ? 'unverified'
           : sse ? terminal ?? 'incomplete' : 'completed');
       });

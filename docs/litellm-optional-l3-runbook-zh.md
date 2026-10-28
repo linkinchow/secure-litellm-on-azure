@@ -38,6 +38,12 @@ Admin Front Door / Admin 登录链路保持直连 LiteLLM，不经过新代理�
   不自动解压或推断压缩SSE的终态，未知编码明确标记缺口。
 - LAW 仅存调用 ID、时间、模型、Key SHA-256、轮次关联哈希、结果状态、字节数、
   内容哈希、Blob 相对路径及运行风险。无正文预览、无模型语义摘要。
+- `Record.outcome`区分业务结果与审计风险：`completed`为观测到正常终态；`http-error`为上游
+  返回HTTP≥400（如Key无效、无模型权限，具体码见`status`）；`response-error`为SSE/WSS内
+  上游报告的`error`/`response.failed`事件。这三类是业务结果，正文已完整采集，**不写`risk`**。
+  `failed`（代理连不上上游）、`incomplete`、`disconnected`、`unverified`及任何非空`gap`才写入
+  `Record.risk`，并触发`delivery-risk`告警。旧版本曾把HTTP 4xx记为`failed`并写入风险，
+  升级前的历史记录按`status`区分，不要据此判断审计交付失败。
 - 请求体里客户自己写入的代码、PII、Secret 仍属于原文；本期**没有正文 DLP、内容分类
   或 Prompt Injection 检测**。客户必须批准允许采集的数据类别。
 - Key 哈希表示凭据关联，不代表员工的已验证 Entra 身份；不信任客户端自填 user/metadata 作为审计主体。
@@ -58,6 +64,7 @@ Admin Front Door / Admin 登录链路保持直连 LiteLLM，不经过新代理�
 | 重试 | 每5秒启动一次交付；先Blob再LAW；最长24小时后放弃并报告缺口 |
 | 持久化 | StatefulSet独立2Gi PVC；原文入队后fsync，故障恢复继续交付；不自动删除PVC |
 | 无法写盘/缓冲满/Azure故障 | **业务继续**，日志和心跳标记丢失/退化；不能宣称零丢失 |
+| 入队预算耗尽/写盘失败/spool未就绪 | 丢弃正文（不额外缓冲），但直接向LAW补发该调用的索引行：`gap`/`risk`为`enqueue-budget-exhausted`、`spool-write-failed`或`capture-without-spool`，`blob`为空；每Pod最多256个在途补发，超出或LAW不可用时只记失败计数和心跳退化 |
 
 进程在请求结束前、fsync前退出会丢失活动/待写记录；PVC/节点永久丢失也会丢数据。
 损坏的队列文件被隔离为`.corrupt`并告警，不阻塞后续记录；仍占用磁盘预算，
@@ -524,9 +531,28 @@ origin核对二者，允许默认443端口和根路径`/`的等价写法，不�
 若提示`Enable requires top-level l3Audit.enabled=true`，说明当前CFG尚未按5.1节启用，
 PG开关没有改变；完成合并后重新运行Stage4 plan/execute和协议验收，再运行PG激活计划，
 不复用之前基础版Stage4的哈希。
-执行仅创建内容寻址的不可变配置，再CAS替换该配置卷引用并等待rollout。
+执行仅创建内容寻址的不可变配置，再替换该配置卷引用并等待rollout。
 只把 `store_prompts_in_spend_logs` 变为false，保留 `disable_spend_logs=false`、模型、
 预算、身份、费用日志及其他设置；不删除旧配置。冲突/漂移时重新计划，不强制接管。
+
+LiteLLM Deployment由Stage6/8以server-side apply、字段管理者`llmgw-migration`维护。
+激活工具不再用`kubectl patch`（旧版会让`kubectl-patch`持有配置卷引用，之后Stage6/8
+apply报`conflict with "kubectl-patch"`），而是：
+- 用`kubectl get --show-managed-fields`读取Deployment，按`llmgw-migration`的Apply
+  字段集从现状还原该管理者原本apply的配置，只改配置卷的`configMap.name`，再以同一
+  管理者server-side apply。不能只提交仅含volumes的局部Deployment：SSA会把该管理者
+  未再提交的字段（容器、镜像等）视为放弃并删除。
+- 计划绑定该apply文档；执行时文档、模板、UID或ConfigMap有变化即要求重新计划。
+  apply携带原UID和resourceVersion作为并发前置条件。
+- 先`--dry-run=server`：返回的spec必须与“现状仅替换配置卷引用”完全一致，标签/注解
+  不变，否则报`Server dry-run changes more than the runtime configuration reference`，
+  且尚未创建ConfigMap、未改Deployment。
+- 只有该引用当前被旧版留下的`kubectl-patch`（Update）持有时才加`--force-conflicts`，
+  将这一字段交还`llmgw-migration`；其他管理者持有时阻断并提示人工核查。缺少
+  `llmgw-migration`的Apply记录或其不拥有该配置卷时也阻断，先按平台流程重跑Stage6。
+- 旧版激活过的环境，用新版本对同一模式重新plan/execute一次即可交还所有权；
+  若算出的配置名与当前相同，spec无变化，不触发滚动。之后Stage6/8 apply不再冲突，并按CFG重新渲染该引用
+  （CFG启用`l3Audit`时其渲染同样关闭PG正文）。
 现有PG正文不会被该开关追溯删除，仍按原清理/备份策略处理。
 
 **所有激活步骤完成后**刷新Stage9绑定回执及发布报告：

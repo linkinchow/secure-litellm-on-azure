@@ -12,7 +12,7 @@ let spoolErrorCode = '';
 try { await queue.init(); spoolReady = true; }
 catch (error) { spoolErrorCode = spoolFailureCode(error); signal('spool-init-failed', { errorCode: spoolErrorCode }); }
 const server = createProxy(new URL(process.env.L3_UPSTREAM ?? 'http://litellm.litellm.svc.cluster.local:4000'),
-  record => { if (spoolReady) queue.enqueue(record); else { queue.counters.dropped++; signal('capture-without-spool'); } },
+  record => { if (spoolReady) queue.enqueue(record); else queue.abandon(record, 'capture-without-spool'); },
   () => ({ spoolReady, spoolErrorCode, ...queue.counters }));
 server.listen(8080, '0.0.0.0');
 setInterval(() => { if (spoolReady) void queue.tick(); }, 5000);

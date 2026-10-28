@@ -22,6 +22,7 @@ export class Queue {
   private pendingBytes = 0;
   private pendingCount = 0;
   private running = false;
+  private gapIndexes = new Set<Promise<void>>();
   constructor(readonly directory: string, private readonly sink: Delivery,
     private readonly limit = DISK_LIMIT, private readonly ttl = RETRY_MS) {}
   async init(): Promise<void> {
@@ -49,7 +50,7 @@ export class Queue {
     const size = Buffer.byteLength(text);
     if (size + this.pendingBytes + this.counters.diskBytes > this.limit || this.pendingBytes + size > 64 * 1024 * 1024
       || this.pendingCount >= 4096) {
-      this.counters.dropped++; signal('enqueue-budget-exhausted'); return;
+      this.abandon(record, 'enqueue-budget-exhausted'); return;
     }
     this.pendingBytes += size;
     this.pendingCount++;
@@ -64,11 +65,24 @@ export class Queue {
           this.counters.queued++; signal('spool-ack-uncertain');
         } catch (error) {
           if (code(error) !== 'ENOENT') signal('spool-status-unavailable');
-          this.pendingCount--; this.counters.dropped++;
+          this.pendingCount--; this.counters.dropped++; this.gapIndex(record, 'spool-write-failed');
         }
       }
       finally { this.pendingBytes -= size; }
     });
+  }
+  // Content that cannot be spooled is dropped, but the call keeps a small LAW index row with an explicit gap.
+  abandon(record: RecordEnvelope, reason: string): void {
+    this.counters.dropped++; signal(reason); this.gapIndex(record, reason);
+  }
+  private gapIndex(record: RecordEnvelope, reason: string): void {
+    // Only the metadata index is sent, never content; bounded so an outage cannot pile up requests.
+    if (this.gapIndexes.size >= 256) { this.counters.failures++; signal('gap-index-unavailable'); return; }
+    const index: Index = { ...record.index, gap: reason, risk: reason, contentSha256: '', blob: '' };
+    const delivery: Promise<void> = this.sink.index(index)
+      .catch(() => { this.counters.failures++; signal('gap-index-unavailable'); })
+      .finally(() => { this.gapIndexes.delete(delivery); });
+    this.gapIndexes.add(delivery);
   }
   private async atomic(name: string, text: string): Promise<void> {
     const temporary = join(this.directory, name + '.tmp');
@@ -83,12 +97,12 @@ export class Queue {
       catch (error) { if (code(error) !== 'ENOENT') signal('spool-temp-cleanup-failed'); }
     }
   }
-  async flush(): Promise<void> { await this.serial; }
+  async flush(): Promise<void> { await this.serial; await Promise.all(this.gapIndexes); }
   async tick(now = Date.now()): Promise<void> {
     if (this.running) return;
     this.running = true;
     try {
-      await this.flush();
+      await this.serial;
       for (const name of (await readdir(this.directory)).filter(name => name.endsWith('.json')).sort()) {
         const path = join(this.directory, name);
         try {

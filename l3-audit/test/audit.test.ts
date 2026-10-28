@@ -6,13 +6,13 @@ import { join } from 'node:path';
 import http from 'node:http';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { Capture, CONTENT_LIMIT, MEMORY_LIMIT, parse, type RecordEnvelope } from '../src/record.js';
+import { Capture, CONTENT_LIMIT, MEMORY_LIMIT, parse, type Index, type RecordEnvelope } from '../src/record.js';
 import { Queue, spoolFailureCode, type Delivery } from '../src/queue.js';
 import { FrameTap, Session } from '../src/websocket.js';
 import { createProxy } from '../src/proxy.js';
 import { render } from '../src/render.js';
 import type { Duplex } from 'node:stream';
-import { pgConfiguration, patchFor, snapshot } from '../src/activation.js';
+import { activationFor, expectedSpec, extractOwned, pgConfiguration, snapshot } from '../src/activation.js';
 import { parse as yamlParse } from 'yaml';
 
 function frame(value: unknown, masked = false): Buffer {
@@ -114,18 +114,36 @@ test('only real lost+found directory is ignored; unknown entries, links and queu
   assert.equal(spoolFailureCode(Object.assign(new Error('private-path'), { code: 'EACCES' })), 'EACCES');
   assert.equal(spoolFailureCode(new Error('private-path private-body')), 'spool-initialization-error');
 });
-test('disk budget rejects audit only; expired records produce gap index and are removed', async () => {
+test('disk budget rejects audit content only; dropped and expired records produce gap index and are removed', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'l3-expiry-'));
-  const gaps: string[] = [];
+  const indexes: Index[] = [];
   const sink: Delivery = { async content() { throw new Error('must not upload expired'); },
-    async index(value) { gaps.push(value.gap); } };
+    async index(value) { indexes.push(value); } };
   try {
-    const limited = new Queue(directory, sink, 1); await limited.init(); limited.enqueue(sample()); await limited.flush();
-    assert.equal(limited.counters.dropped, 1);
+    const limited = new Queue(directory, sink, 1); await limited.init();
+    const dropped = sample(); limited.enqueue(dropped); await limited.flush();
+    assert.equal(limited.counters.dropped, 1); assert.equal((await readdir(directory)).length, 0);
+    assert.equal(indexes.length, 1);
+    assert.deepEqual(indexes[0], { ...dropped.index, gap: 'enqueue-budget-exhausted', risk: 'enqueue-budget-exhausted',
+      contentSha256: '', blob: '' });
+    assert.ok(!JSON.stringify(indexes[0]).includes('synthetic-private-text'));
     const queue = new Queue(directory, sink, 1e6, 1); await queue.init(); queue.enqueue(sample()); await queue.flush();
     await queue.tick(Date.now() + 1000);
-    assert.deepEqual(gaps, ['delivery-expired']);
+    assert.deepEqual(indexes.map(value => value.gap), ['enqueue-budget-exhausted', 'delivery-expired']);
     assert.equal((await readdir(directory)).length, 0);
+  } finally { await rm(directory, { recursive: true }); }
+});
+test('gap index delivery for dropped records is bounded and failures are counted', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'l3-gap-bound-'));
+  let calls = 0;
+  const sink: Delivery = { async content() {}, index() { calls++; return new Promise<void>(() => {}); } };
+  try {
+    const queue = new Queue(directory, sink, 1); await queue.init();
+    for (let i = 0; i < 300; i++) queue.enqueue(sample());
+    assert.equal(calls, 256); assert.equal(queue.counters.dropped, 300); assert.equal(queue.counters.failures, 44);
+    const failing = new Queue(directory, { async content() {}, async index() { throw new Error('synthetic outage'); } });
+    failing.abandon(sample(), 'capture-without-spool'); await failing.flush();
+    assert.equal(failing.counters.dropped, 1); assert.equal(failing.counters.failures, 1);
   } finally { await rm(directory, { recursive: true }); }
 });
 test('corrupt spool record is quarantined rather than blocking all following records', async () => {
@@ -163,8 +181,12 @@ test('WSS tool roundtrip records each turn and continuation link; disconnect is 
   assert.equal(records.length, 2); assert.equal(records[0]!.index.responseHash, records[1]!.index.previousResponseHash);
   assert.equal(records[0]!.index.outcome, 'completed'); assert.equal(records[1]!.index.outcome, 'completed');
   assert.ok(Buffer.from(records[1]!.parts[0]!.data, 'base64').toString().includes('function_call_output'));
+  session.client.feed(frame({ type: 'response.create', model: 'not-allowed', input: 'rejected' }, true));
+  session.server.feed(frame({ type: 'error', error: { code: 'model_not_found' } }));
+  assert.equal(records[2]!.index.outcome, 'response-error'); assert.equal(records[2]!.index.risk, '');
   session.client.feed(frame({ type: 'response.create', model: 'coding', input: 'unfinished' }, true)); session.close();
-  assert.equal(records[2]!.index.outcome, 'disconnected'); assert.deepEqual(gaps, []);
+  assert.equal(records[3]!.index.outcome, 'disconnected'); assert.equal(records[3]!.index.risk, 'disconnected');
+  assert.deepEqual(gaps, []);
 });
 async function listen(server: http.Server): Promise<URL> {
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
@@ -195,10 +217,34 @@ test('real HTTP/SSE keeps bytes and headers; upstream 400 and audit sink failure
     const embeddings = await fetch(new URL('/v1/embeddings', url), { method: 'POST', body: '{"model":"embedding","input":"test"}' });
     assert.equal(await embeddings.text(), '{"data":[{"embedding":[1,2,3]}]}');
     assert.equal(records.length, 3);
-    assert.equal(records[0]!.index.outcome, 'failed');
-    assert.equal(records[1]!.index.outcome, 'completed');
+    assert.equal(records[0]!.index.outcome, 'http-error'); assert.equal(records[0]!.index.status, 400);
+    assert.equal(records[0]!.index.risk, ''); assert.equal(records[0]!.index.gap, '');
+    assert.equal(records[1]!.index.outcome, 'completed'); assert.equal(records[1]!.index.risk, '');
     assert.ok(records[2]!.parts.every(part => part.direction === 'request'));
   } finally { proxy.closeAllConnections(); upstream.closeAllConnections(); await Promise.all([new Promise<void>(r => proxy.close(() => r())), new Promise<void>(r => upstream.close(() => r()))]); }
+});
+test('upstream failure events are business outcomes; only an unreachable upstream is audit risk', async () => {
+  const upstream = http.createServer((request, response) => {
+    request.resume();
+    request.on('end', () => {
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.end('data: {"type":"response.failed","response":{"id":"resp-failed","status":"failed"}}\n\n');
+    });
+  });
+  const upstreamUrl = await listen(upstream), records: RecordEnvelope[] = [];
+  const proxy = createProxy(upstreamUrl, r => records.push(r), () => ({})), url = await listen(proxy);
+  const closed = http.createServer(), closedUrl = await listen(closed);
+  await new Promise<void>(r => closed.close(() => r()));
+  const unreachable = createProxy(closedUrl, r => records.push(r), () => ({})), unreachableUrl = await listen(unreachable);
+  try {
+    await (await fetch(new URL('/v1/responses', url), { method: 'POST', body: '{"model":"coding"}' })).text();
+    const failed = await fetch(new URL('/v1/responses', unreachableUrl), { method: 'POST', body: '{"model":"coding"}' });
+    assert.equal(failed.status, 502); await failed.text();
+    assert.deepEqual(records.map(r => [r.index.outcome, r.index.risk]), [['response-error', ''], ['failed', 'failed']]);
+  } finally {
+    for (const server of [proxy, upstream, unreachable]) server.closeAllConnections();
+    await Promise.all([proxy, upstream, unreachable].map(server => new Promise<void>(r => server.close(() => r()))));
+  }
 });
 test('HTTP records link to LiteLLM Spend Logs by response id hash and call id', async () => {
   const padding = 'x'.repeat(100000);
@@ -274,7 +320,9 @@ test('real WebSocket upgrade and frames traverse the transparent proxy unchanged
 });
 test('real HTTP inference remains successful when persistent audit queue is full', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'l3-fail-open-'));
-  const queue = new Queue(directory, { async content() { throw new Error('must not deliver'); }, async index() {} }, 1);
+  const indexes: Index[] = [];
+  const queue = new Queue(directory, { async content() { throw new Error('must not deliver'); },
+    async index(value) { indexes.push(value); } }, 1);
   await queue.init();
   const upstream = http.createServer((request, response) => { request.resume(); request.on('end', () => response.end('OK')); });
   const upstreamUrl = await listen(upstream);
@@ -283,6 +331,9 @@ test('real HTTP inference remains successful when persistent audit queue is full
     const response = await fetch(new URL('/v1/responses', url), { method: 'POST', body: '{"model":"coding"}' });
     assert.equal(response.status, 200); assert.equal(await response.text(), 'OK');
     assert.equal(queue.counters.dropped, 1); assert.equal((await readdir(directory)).length, 0);
+    await queue.flush();
+    assert.deepEqual(indexes.map(value => [value.status, value.outcome, value.gap, value.blob]),
+      [[200, 'completed', 'enqueue-budget-exhausted', '']]);
   } finally {
     proxy.closeAllConnections(); upstream.closeAllConnections();
     await Promise.all([new Promise<void>(r => proxy.close(() => r())), new Promise<void>(r => upstream.close(() => r()))]);
@@ -325,21 +376,52 @@ test('zone-redundant manifest spreads replicas across zones on ZRS spool disks',
     [['kubernetes.io/hostname', 'ScheduleAnyway'], ['topology.kubernetes.io/zone', 'ScheduleAnyway']]);
   assert.throws(() => render({ ...settings, zoneRedundant: 'true' as unknown as boolean }), /zoneRedundant/);
 });
-test('PG activation changes only content flag and uses template/UID compare-and-swap', () => {
+test('PG activation changes only content flag and re-applies only the platform-owned volume reference', () => {
   const original = 'model_list: []\ngeneral_settings:\n  disable_spend_logs: false\n  store_prompts_in_spend_logs: true\n  maximum_spend_logs_retention_period: 30d\n';
   const enabled = yamlParse(pgConfiguration(original, true));
   assert.equal(enabled.general_settings.store_prompts_in_spend_logs, false);
   assert.equal(enabled.general_settings.disable_spend_logs, false);
   assert.equal(enabled.general_settings.maximum_spend_logs_retention_period, '30d');
   assert.equal(yamlParse(pgConfiguration(pgConfiguration(original, true), false)).general_settings.store_prompts_in_spend_logs, true);
-  const current = snapshot({ metadata: { name: 'litellm', namespace: 'litellm', uid: 'uid' },
-    spec: { template: { metadata: { annotations: { preserved: 'true' } },
-      spec: { volumes: [{ name: 'config', configMap: { name: 'litellm-config-old' } }] } } } },
-  { metadata: { name: 'litellm-config-old' }, data: { 'config.yaml': original } });
-  const patch = patchFor(current, 'new');
-  assert.deepEqual(patch.map(value => Object.keys(value)), [
-    ['op', 'path', 'value'], ['op', 'path', 'value'], ['op', 'path', 'value']]);
-  assert.equal(JSON.stringify(patch).includes('/metadata/uid'), true);
-  assert.equal(JSON.stringify(patch).includes('/spec/template/spec/volumes/0/configMap/name'), true);
+  const platform = { manager: 'llmgw-migration', operation: 'Apply', apiVersion: 'apps/v1', fieldsType: 'FieldsV1', fieldsV1: {
+    'f:metadata': { 'f:labels': { '.': {}, 'f:app': {} } },
+    'f:spec': { 'f:replicas': {}, 'f:template': { 'f:metadata': { 'f:annotations': { 'f:preserved': {} } }, 'f:spec': {
+      'f:containers': { 'k:{"name":"litellm"}': { '.': {}, 'f:name': {}, 'f:image': {}, 'f:args': {},
+        'f:env': { 'k:{"name":"A"}': { '.': {}, 'f:name': {}, 'f:value': {} } },
+        'f:ports': { 'k:{"containerPort":4000,"protocol":"TCP"}': { '.': {}, 'f:containerPort': {}, 'f:protocol': {} } } } },
+      'f:volumes': { 'k:{"name":"config"}': { '.': {}, 'f:name': {}, 'f:configMap': { 'f:name': {} } },
+        'k:{"name":"tmp"}': { '.': {}, 'f:name': {}, 'f:emptyDir': {} } } } } } } };
+  const deployment = (managedFields: unknown[]) => ({ metadata: { name: 'litellm', namespace: 'litellm', uid: 'uid',
+    resourceVersion: '7', labels: { app: 'litellm', other: 'kept' }, managedFields },
+    spec: { replicas: 2, revisionHistoryLimit: 10, template: { metadata: { annotations: { preserved: 'true', restartedAt: 'x' } },
+      spec: { containers: [{ name: 'litellm', image: 'img', args: ['--port', '4000'], terminationMessagePath: '/dev/termination-log',
+        env: [{ name: 'A', value: '1' }, { name: 'B', value: 'other-manager' }], ports: [{ containerPort: 4000, protocol: 'TCP' }] }],
+      volumes: [{ name: 'tmp', emptyDir: {} }, { name: 'config', configMap: { name: 'litellm-config-old', defaultMode: 420 } }] } } } });
+  const config = { metadata: { name: 'litellm-config-old' }, data: { 'config.yaml': original } };
+  const current = snapshot(deployment([platform]), config);
+  assert.equal(current.volumeIndex, 1);
+  const activation = activationFor(current, 'litellm-config-l3-new');
+  assert.equal(activation.forceConflicts, false);
+  // Only what llmgw-migration applied is re-applied, so Stage 6/8 keep owning (and can later change) every field.
+  assert.deepEqual(activation.document, { apiVersion: 'apps/v1', kind: 'Deployment',
+    metadata: { name: 'litellm', namespace: 'litellm', uid: 'uid', labels: { app: 'litellm' } },
+    spec: { replicas: 2, template: { metadata: { annotations: { preserved: 'true' } }, spec: {
+      containers: [{ name: 'litellm', image: 'img', args: ['--port', '4000'], env: [{ name: 'A', value: '1' }],
+        ports: [{ containerPort: 4000, protocol: 'TCP' }] }],
+      volumes: [{ name: 'tmp', emptyDir: {} }, { name: 'config', configMap: { name: 'litellm-config-l3-new' } }] } } } });
+  const expected = expectedSpec(current, 'litellm-config-l3-new') as { template: { spec: { volumes: unknown[] } } };
+  assert.deepEqual(expected.template.spec.volumes[1], { name: 'config', configMap: { name: 'litellm-config-l3-new', defaultMode: 420 } });
+  assert.deepEqual(extractOwned([{ name: 'a' }, 'x'], { 'i:1': {}, 'v:"x"': {} }), ['x']);
+  const legacy = { manager: 'kubectl-patch', operation: 'Update', apiVersion: 'apps/v1', fieldsType: 'FieldsV1', fieldsV1: {
+    'f:spec': { 'f:template': { 'f:spec': { 'f:volumes': { 'k:{"name":"config"}': { 'f:configMap': { 'f:name': {} } } } } } } } };
+  assert.equal(activationFor(snapshot(deployment([platform, legacy]), config), 'new').forceConflicts, true);
+  for (const [managers, message] of [
+    [[], /--show-managed-fields/],
+    [[legacy], /llmgw-migration server-side apply owner/],
+    [[platform, { ...legacy, manager: 'someone-else' }], /Another field manager/],
+    [[{ ...platform, fieldsV1: { 'f:metadata': { 'f:labels': { 'f:app': {} } } } }], /not owned by llmgw-migration/],
+  ] as const) {
+    assert.throws(() => activationFor(snapshot(deployment([...managers]), config), 'new'), message);
+  }
   assert.throws(() => pgConfiguration('general_settings: {}', true));
 });

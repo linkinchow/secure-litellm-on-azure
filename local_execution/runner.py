@@ -18,6 +18,7 @@ import yaml
 
 from scripts.customer_migration import (
     ROOT,
+    SUBSCRIPTION_COMPONENTS,
     MigrationError,
     deployment_mode,
     fingerprint,
@@ -35,6 +36,7 @@ INFRASTRUCTURE_STEPS = {
     "network": (0, "network"),
     "backup": (0, "backup"),
     "execution-host-connectivity": (0, "runner-connectivity"),
+    "stage0-hub": (0, "hub"),
     "legacy-logging": (1, "legacy-logging"),
     "monitoring": (1, "monitoring"),
     "stage3-platform": (3, "platform"),
@@ -94,6 +96,7 @@ STEPS = (
     "network",
     "backup",
     "execution-host-connectivity",
+    "stage0-hub",
     "connectivity-check",
     "backup-restore",
     "legacy-logging",
@@ -106,7 +109,7 @@ STEPS = (
     "stage3-source-check",
     "stage4-target-check",
     *tuple(IMAGE_STEPS),
-    *tuple(key for key in INFRASTRUCTURE_STEPS if key.startswith("stage")),
+    *tuple(key for key in INFRASTRUCTURE_STEPS if key.startswith("stage") and key != "stage0-hub"),
     *tuple(key for key in RUNTIME_STEPS if key.startswith("stage")),
     "stage9-edge-release",
 )
@@ -273,7 +276,7 @@ def execute_infrastructure_plan(config, stage, component, plan, plan_directory, 
     azure = AzureCommands(config, execute_directory)
     context = azure.run(["account", "show", "--query", "{tenantId:tenantId,id:id}"])
     require(context == {"tenantId": config["azure"]["tenantId"], "id": config["azure"]["subscriptionId"]}, "Azure login scope does not match customer configuration")
-    scope = "sub" if component == "bootstrap" else "group"
+    scope = "sub" if component in SUBSCRIPTION_COMPONENTS else "group"
     if scope == "sub":
         scope_arguments = ["--location", config["location"]]
     else:
@@ -725,6 +728,8 @@ def run_backup_restore(config, settings, revision, destination):
 
 def check_configuration(config):
     components = ((0, "bootstrap"), (0, "network"), (0, "runner-connectivity")) if deployment_mode(config) == "greenfield" else ((0, "bootstrap"), (0, "backup"), (0, "runner-connectivity"), (1, "legacy-logging"), (1, "monitoring"))
+    if "hub" in config["parameters"]:
+        components += ((0, "hub"),)
     for stage, component in components:
         parameters_for(config, stage, component)
     return {"status": "valid"}

@@ -1,9 +1,29 @@
 targetScope = 'resourceGroup'
 
+type stage4EgressConfiguration = {
+  @description('dedicated (default) deploys Azure Firewall inside the target VNet; hub routes through the Stage 0 hub firewall.')
+  mode: ('dedicated' | 'hub')
+  @description('Hub mode only: priority of the rule collection group this spoke owns in the shared hub policy.')
+  ruleCollectionGroupPriority: int?
+}
+
+type stage4HubConfiguration = {
+  resourceGroupName: string
+  virtualNetworkName: string
+  firewallPolicyName: string
+  firewallPrivateIpAddress: string
+  deploymentName: string
+  hubPeeringName: string
+  spokePeeringName: string
+  ruleCollectionGroupName: string
+  ruleCollectionGroupPriority: int
+}
+
 type stage4NetworkConfiguration = {
   virtualNetworkName: string
   privateEndpointSubnetName: string
-  firewallSubnetPrefix: string
+  @description('Dedicated egress only; hub egress has no spoke AzureFirewallSubnet.')
+  firewallSubnetPrefix: string?
   systemSubnetName: string
   systemSubnetPrefix: string
   userSubnetName: string
@@ -13,6 +33,7 @@ type stage4NetworkConfiguration = {
   podCidr: string
   serviceCidr: string
   dnsServiceIp: string
+  egress: stage4EgressConfiguration?
 }
 
 type stage4AksConfiguration = {
@@ -143,6 +164,9 @@ param stage4Network stage4NetworkConfiguration = {
   dnsServiceIp: '10.31.0.10'
 }
 
+@description('Hub egress only: hub firewall, peering and rule collection group resolved from the Stage 0 hub deployment receipt; never typed by operators.')
+param stage4Hub stage4HubConfiguration?
+
 @description('Stage 4 Private AKS configuration.')
 param stage4Aks stage4AksConfiguration = {
   name: 'litellm-private-${environmentName}'
@@ -176,6 +200,7 @@ var azureEnvironmentHttpsFqdns = [
 ]
 
 var stage5Enabled = deployStage4 && deployStage5
+var hubEgress = (stage4Network.?egress.?mode ?? 'dedicated') == 'hub'
 var stage5UniqueSuffix = uniqueString(subscription().id, resourceGroup().id, environmentName)
 var keyVaultName = 'kv-lt-${environmentName}-${stage5UniqueSuffix}'
 var postgresqlServerName = 'psql-lt-${environmentName}-${stage5UniqueSuffix}'
@@ -198,10 +223,10 @@ module containerRegistry '../modules/container-registry/main.bicep' = if (deploy
   }
 }
 
-module networkFoundation '../modules/network-foundation/main.bicep' = if (deployStage4) {
+module networkFoundation '../modules/network-foundation/main.bicep' = if (deployStage4 && !hubEgress) {
   params: {
     virtualNetworkName: stage4Network.virtualNetworkName
-    firewallSubnetPrefix: stage4Network.firewallSubnetPrefix
+    firewallSubnetPrefix: stage4Network.?firewallSubnetPrefix ?? ''
   }
 }
 
@@ -220,7 +245,7 @@ module privateDns '../modules/private-dns/main.bicep' = if (deployStage4) {
   }
 }
 
-module firewall '../modules/firewall-egress/main.bicep' = if (deployStage4) {
+module firewall '../modules/firewall-egress/main.bicep' = if (deployStage4 && !hubEgress) {
   params: {
     location: location
     virtualNetworkName: stage4Network.virtualNetworkName
@@ -241,6 +266,47 @@ module firewall '../modules/firewall-egress/main.bicep' = if (deployStage4) {
   ]
 }
 
+resource spokeVirtualNetwork 'Microsoft.Network/virtualNetworks@2024-07-01' existing = if (deployStage4 && hubEgress) {
+  name: stage4Network.virtualNetworkName
+}
+
+// Hub side first: the hub-to-spoke peering and this spoke's rule collection group in the shared policy.
+module hubEgressRules '../modules/hub-egress/main.bicep' = if (deployStage4 && hubEgress) {
+  name: stage4Hub.?deploymentName ?? 'llmgw-hub-egress'
+  scope: resourceGroup(stage4Hub.?resourceGroupName ?? resourceGroup().name)
+  params: {
+    hubVirtualNetworkName: stage4Hub.?virtualNetworkName ?? ''
+    firewallPolicyName: stage4Hub.?firewallPolicyName ?? ''
+    spokeVirtualNetworkId: spokeVirtualNetwork.id
+    peeringName: stage4Hub.?hubPeeringName ?? ''
+    ruleCollectionGroupName: stage4Hub.?ruleCollectionGroupName ?? ''
+    ruleCollectionGroupPriority: stage4Hub.?ruleCollectionGroupPriority ?? 100
+    sourceAddressPrefixes: [
+      stage4Network.systemSubnetPrefix
+      stage4Network.userSubnetPrefix
+      stage4Network.ingressSubnetPrefix
+    ]
+    approvedHttpsFqdns: union(approvedHttpsFqdns, azureEnvironmentHttpsFqdns, publicModelHosts)
+  }
+}
+
+resource spokeToHubPeering 'Microsoft.Network/virtualNetworks/virtualNetworkPeerings@2024-07-01' = if (deployStage4 && hubEgress) {
+  parent: spokeVirtualNetwork
+  name: stage4Hub.?spokePeeringName ?? 'llmgw-hub'
+  properties: {
+    remoteVirtualNetwork: {
+      id: resourceId(subscription().subscriptionId, stage4Hub.?resourceGroupName ?? resourceGroup().name, 'Microsoft.Network/virtualNetworks', stage4Hub.?virtualNetworkName ?? 'hub')
+    }
+    allowVirtualNetworkAccess: true
+    allowForwardedTraffic: true
+    allowGatewayTransit: false
+    useRemoteGateways: false
+  }
+  dependsOn: [
+    hubEgressRules
+  ]
+}
+
 module aksNetwork '../modules/aks-network/main.bicep' = if (deployStage4) {
   params: {
     location: location
@@ -251,9 +317,13 @@ module aksNetwork '../modules/aks-network/main.bicep' = if (deployStage4) {
     userSubnetPrefix: stage4Network.userSubnetPrefix
     ingressSubnetName: stage4Network.ingressSubnetName
     ingressSubnetPrefix: stage4Network.ingressSubnetPrefix
-    firewallPrivateIpAddress: firewall!.outputs.firewall.privateIpAddress
+    firewallPrivateIpAddress: hubEgress ? (stage4Hub.?firewallPrivateIpAddress ?? '') : firewall!.outputs.firewall.privateIpAddress
     tags: tags
   }
+  // Hub egress: subnets take the hub route only after both peerings and the rules exist, and never race the peering write on the VNet.
+  dependsOn: [
+    spokeToHubPeering
+  ]
 }
 
 module privateAks '../modules/private-aks/main.bicep' = if (deployStage4) {
@@ -432,6 +502,7 @@ output platform object = {
   containerRegistryDeployed: deployContainerRegistry
   containerRegistryName: containerRegistry.?outputs.?registry.?name ?? containerRegistryName
   stage4Deployed: deployStage4
+  egressMode: hubEgress ? 'hub' : 'dedicated'
   privateAksName: privateAks.?outputs.?aks.?name ?? stage4Aks.name
   workloadIdentityName: workloadIdentity.?outputs.?workloadIdentity.?name ?? 'id-litellm-workload-${environmentName}'
   workloadIdentityClientId: workloadIdentity.?outputs.?workloadIdentity.?clientId ?? ''

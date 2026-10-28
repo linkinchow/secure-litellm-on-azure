@@ -14,7 +14,7 @@ on:
       component:
         type: choice
         required: true
-        options: [bootstrap, network, backup, runner-connectivity, legacy-logging, monitoring, platform, aks-ingress-role, certificate-vault, runner-target-connectivity, proxy-foundation, audit-foundation, audit, observability, origin, edge]
+        options: [bootstrap, network, backup, runner-connectivity, hub, legacy-logging, monitoring, platform, aks-ingress-role, certificate-vault, runner-target-connectivity, proxy-foundation, audit-foundation, audit, observability, origin, edge]
       operation:
         type: choice
         required: true

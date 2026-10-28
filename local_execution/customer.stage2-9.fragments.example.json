@@ -63,6 +63,34 @@
             }
           }
         }
+      },
+      "hubEgress": {
+        "customerConfig": {
+          "parameters": {
+            "hub": {
+              "resourceGroupName": "REPLACE_HUB_RESOURCE_GROUP",
+              "virtualNetworkName": "REPLACE_HUB_VNET",
+              "virtualNetworkAddressPrefix": "10.40.0.0/24",
+              "firewallSubnetPrefix": "10.40.0.0/26",
+              "reservedPrefixes": {
+                "AzureFirewallManagementSubnet": "10.40.0.64/26",
+                "AzureBastionSubnet": "10.40.0.128/26",
+                "GatewaySubnet": "10.40.0.192/27"
+              },
+              "logAnalyticsWorkspaceName": "REPLACE_TARGET_LOG_WORKSPACE"
+            },
+            "platform": {
+              "stage4Network": {
+                "egress": {
+                  "mode": "hub"
+                }
+              }
+            }
+          }
+        },
+        "removeCustomerConfigPathsAfterMerge": [
+          "parameters.platform.stage4Network.firewallSubnetPrefix"
+        ]
       }
     },
     "4": {

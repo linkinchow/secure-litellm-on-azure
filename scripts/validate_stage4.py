@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 from pathlib import Path
 
 import yaml
@@ -19,6 +20,14 @@ SUBNETS = {
 }
 POD_CIDR = ipaddress.ip_network("10.244.0.0/16")
 SERVICE_CIDR = ipaddress.ip_network("10.31.0.0/16")
+# Optional hub egress reference plan: a /24 hub with the firewall subnet and reserved later subnets.
+HUB_VNET = ipaddress.ip_network("10.40.0.0/24")
+HUB_SUBNETS = {
+    "AzureFirewallSubnet": ipaddress.ip_network("10.40.0.0/26"),
+    "AzureFirewallManagementSubnet": ipaddress.ip_network("10.40.0.64/26"),
+    "AzureBastionSubnet": ipaddress.ip_network("10.40.0.128/26"),
+    "GatewaySubnet": ipaddress.ip_network("10.40.0.192/27"),
+}
 
 
 def validate_cidrs() -> None:
@@ -32,6 +41,41 @@ def validate_cidrs() -> None:
     assert not VNET.overlaps(SERVICE_CIDR)
     assert not POD_CIDR.overlaps(SERVICE_CIDR)
     assert ipaddress.ip_address("10.31.0.10") in SERVICE_CIDR
+
+
+def validate_hub_cidrs() -> None:
+    for name, subnet in HUB_SUBNETS.items():
+        assert subnet.subnet_of(HUB_VNET), f"{name} is outside {HUB_VNET}"
+    values = list(HUB_SUBNETS.items())
+    for index, (left_name, left) in enumerate(values):
+        for right_name, right in values[index + 1 :]:
+            assert not left.overlaps(right), f"Hub {left_name} overlaps {right_name}"
+    for spoke in (VNET, POD_CIDR, SERVICE_CIDR):
+        assert not HUB_VNET.overlaps(spoke), f"Hub overlaps {spoke}"
+    catalog = json.loads((ROOT / "local_execution/customer.stage2-9.fragments.example.json").read_text())
+    fragment = catalog["stages"]["3"]["hubEgress"]
+    hub = fragment["customerConfig"]["parameters"]["hub"]
+    assert ipaddress.ip_network(hub["virtualNetworkAddressPrefix"]) == HUB_VNET
+    assert ipaddress.ip_network(hub["firewallSubnetPrefix"]) == HUB_SUBNETS["AzureFirewallSubnet"]
+    assert {name: ipaddress.ip_network(value) for name, value in hub["reservedPrefixes"].items()} == {name: value for name, value in HUB_SUBNETS.items() if name != "AzureFirewallSubnet"}
+    assert fragment["customerConfig"]["parameters"]["platform"]["stage4Network"]["egress"] == {"mode": "hub"}
+    assert fragment["removeCustomerConfigPathsAfterMerge"] == ["parameters.platform.stage4Network.firewallSubnetPrefix"]
+
+
+def rule_collections(path: Path) -> str:
+    text = path.read_text()
+    start = text.index("    ruleCollections: [\n")
+    return text[start : text.index("\n    ]\n", start)]
+
+
+def validate_hub_egress_rules() -> None:
+    dedicated = rule_collections(ROOT / "infra/modules/firewall-egress/main.bicep")
+    hub = rule_collections(ROOT / "infra/modules/hub-egress/main.bicep")
+    assert dedicated == hub, "Hub egress rules must match the dedicated firewall rules"
+    hub_network = (ROOT / "infra/modules/hub-network/main.bicep").read_text()
+    assert "ruleCollectionGroups" not in hub_network, "The hub policy carries no workload rules"
+    for value in ("name: 'AzureFirewallManagementSubnet'", "name: 'AzureBastionSubnet'", "name: 'GatewaySubnet'", "zones:"):
+        assert value not in hub_network, f"The hub template must not declare {value}"
 
 
 def validate_network_policies() -> None:
@@ -60,6 +104,8 @@ def validate_workload_identity_patch() -> None:
 
 if __name__ == "__main__":
     validate_cidrs()
+    validate_hub_cidrs()
+    validate_hub_egress_rules()
     validate_network_policies()
     validate_workload_identity_patch()
     print("Stage 4 static safety checks passed.")

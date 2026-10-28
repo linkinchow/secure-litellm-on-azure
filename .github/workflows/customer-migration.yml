@@ -22,7 +22,7 @@ on:
         description: IaC component (none for guidance or application-stage readiness)
         required: true
         type: choice
-        options: [none, bootstrap, network, backup, runner-connectivity, legacy-logging, monitoring, platform, aks-ingress-role, certificate-vault, runner-target-connectivity, proxy-foundation, audit-foundation, audit, observability, origin, edge]
+        options: [none, bootstrap, network, backup, runner-connectivity, hub, legacy-logging, monitoring, platform, aks-ingress-role, certificate-vault, runner-target-connectivity, proxy-foundation, audit-foundation, audit, observability, origin, edge]
 
 permissions:
   contents: read

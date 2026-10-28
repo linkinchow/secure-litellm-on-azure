@@ -96,6 +96,9 @@ class CustomerTemplateTests(unittest.TestCase):
                 selected["parameters"]["network"] = {key: selected["parameters"]["backup"][key] for key in COMPONENTS["network"][2]}
                 selected["parameters"].pop("backup")
                 validate_config(selected, "test")
+            if component == "hub":
+                selected["parameters"]["hub"] = {"resourceGroupName": "rg-hub", "virtualNetworkName": "hub-vnet", "virtualNetworkAddressPrefix": "10.40.0.0/24", "firewallSubnetPrefix": "10.40.0.0/26", "logAnalyticsWorkspaceName": "target-logs"}
+                validate_config(selected, "test")
             result = subprocess.run(["az", "bicep", "build", "--file", str(ROOT / f"infra/{directory}/main.bicep"), "--stdout"], capture_output=True, text=True, check=True)
             compiled = json.loads(result.stdout)
             if component == "certificate-vault":
@@ -108,7 +111,7 @@ class CustomerTemplateTests(unittest.TestCase):
                     _template, document = parameters_for(selected, stage, component)
                     parameters = document["parameters"]
                     self.assertFalse(set(parameters) - set(declarations))
-                    self.assertFalse({name for name, declaration in declarations.items() if "defaultValue" not in declaration} - set(parameters))
+                    self.assertFalse({name for name, declaration in declarations.items() if "defaultValue" not in declaration and not declaration.get("nullable")} - set(parameters))
                     for name, item in parameters.items():
                         declaration = declarations[name]
                         if "$ref" in declaration:

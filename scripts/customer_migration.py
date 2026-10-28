@@ -43,6 +43,7 @@ COMPONENTS = {
     "network": (0, "network-bootstrap", {"virtualNetworkName", "virtualNetworkAddressPrefix", "privateEndpointSubnetName", "privateEndpointSubnetPrefix"}),
     "backup": (0, "backup-storage", {"storageAccountName", "virtualNetworkName", "virtualNetworkAddressPrefix", "privateEndpointSubnetName", "privateEndpointSubnetPrefix", "logAnalyticsWorkspaceName", "backupOwnerPrincipalId", "backupAutomationPrincipalId", "storageSku", "softDeleteRetentionDays"}),
     "runner-connectivity": (0, "runner-connectivity", {"runnerVirtualNetworkId", "managePeering", "manageBlobDnsLink"}),
+    "hub": (0, "hub", {"resourceGroupName", "virtualNetworkName", "virtualNetworkAddressPrefix", "firewallSubnetPrefix", "logAnalyticsWorkspaceName", "logAnalyticsWorkspaceResourceGroupName", "reservedPrefixes"}),
     "legacy-logging": (1, "legacy-logging", {"workspaceMode"}),
     "monitoring": (1, "monitoring", {"logAnalyticsWorkspaceName"}),
     "platform": (3, "environments", {"containerRegistryName", "logAnalyticsWorkspaceName", "stage4Network", "stage4Aks", "stage4RoleAssignmentNaming", "stage5Data", "approvedHttpsFqdns", "azureOpenAIConnections", "createStage5KeyVaultPrivateDnsZone", "createStage5PostgresqlPrivateDnsZone", "createStage5ManagedRedisPrivateDnsZone"}),
@@ -62,6 +63,7 @@ REQUIRED = {
     "legacy-logging": set(),
     "backup": {"logAnalyticsWorkspaceName", "backupOwnerPrincipalId", "virtualNetworkName", "virtualNetworkAddressPrefix", "privateEndpointSubnetName", "privateEndpointSubnetPrefix"},
     "runner-connectivity": {"runnerVirtualNetworkId"},
+    "hub": {"resourceGroupName", "virtualNetworkName", "virtualNetworkAddressPrefix", "firewallSubnetPrefix", "logAnalyticsWorkspaceName"},
     "monitoring": {"logAnalyticsWorkspaceName"},
     "platform": {"containerRegistryName", "logAnalyticsWorkspaceName", "stage4Network", "stage4Aks"},
     "aks-ingress-role": set(),
@@ -74,6 +76,8 @@ REQUIRED = {
     "origin": {"virtualNetworkName", "ingressSubnetName", "apiLoadBalancer", "adminLoadBalancer"},
     "edge": {"privateOrigin", "adminPrivateOrigin", "adminAllowedCidrs", "logAnalyticsWorkspaceName"},
 }
+# Subscription-scope templates that create and own their resource group.
+SUBSCRIPTION_COMPONENTS = frozenset({"bootstrap", "hub"})
 
 
 def fingerprint(value):
@@ -353,6 +357,8 @@ def validate_config(config, environment):
         require(mode != "greenfield" or component not in {"monitoring", "legacy-logging"}, "Legacy monitoring components do not apply to greenfield")
     availability_zones(config)
     platform_maintenance(config)
+    from scripts.hub_network import validate_hub
+    validate_hub(config)
     edge = config["parameters"].get("edge")
     if edge is not None and "adminAllowedCidrs" in edge and configured(edge["adminAllowedCidrs"]):
         admin_source_cidrs(edge["adminAllowedCidrs"])
@@ -450,6 +456,14 @@ def parameters_for(config, stage, component):
         parameters["logAnalyticsWorkspaceName"] = workspace_name
     elif component == "platform":
         require(parameters.get("stage4RoleAssignmentNaming", "principal-id") in {"principal-id", "resource-id"}, "Invalid Stage 4 role assignment naming mode")
+        from scripts.hub_network import egress_mode, platform_hub_parameters
+        # Deployment-time value added by migration_deploy from the stage0-hub receipt, not a customer setting.
+        resolved_hub = parameters.pop("stage4Hub", None)
+        hub_egress = egress_mode(config) == "hub"
+        require(resolved_hub is None or hub_egress, "Only hub egress takes resolved hub parameters")
+        if stage >= 4 and hub_egress:
+            require(resolved_hub is not None, "Hub egress reads the hub firewall from the stage0-hub deployment receipt; render it through the platform plan")
+            parameters["stage4Hub"] = platform_hub_parameters(config, resolved_hub)
         if stage >= 5:
             require("stage5Data" in parameters, "Stage 5 database configuration is required")
             runner_dns = config["parameters"].get("runner-target-connectivity", {})
@@ -466,6 +480,9 @@ def parameters_for(config, stage, component):
         parameters.update(environmentName=config["environment"], deployContainerRegistry=True, deployStage4=stage >= 4, deployStage5=stage >= 5, containerRegistryPublicNetworkAccess="Disabled")
     elif component == "backup":
         parameters["backupOwnerUpn"] = config["ownerEmail"]
+    elif component == "hub":
+        from scripts.hub_network import hub_settings
+        parameters = hub_settings(config)
     elif component == "aks-ingress-role":
         platform = config["parameters"]["platform"]
         network = platform["stage4Network"]
@@ -556,7 +573,7 @@ def prepare(config, stage, component, destination):
 def preview(config, template, path, component):
     require(component != "runner-target-connectivity", "Use Customer infrastructure deployment plan to discover and review existing AKS DNS resources")
     group = config["legacy" if component in {"monitoring", "legacy-logging"} else "target"]["resourceGroup"]
-    scope = ["sub", "what-if", "--location", config["location"]] if component == "bootstrap" else ["group", "what-if", "--resource-group", group]
+    scope = ["sub", "what-if", "--location", config["location"]] if component in SUBSCRIPTION_COMPONENTS else ["group", "what-if", "--resource-group", group]
     result = subprocess.run(["az", "deployment", *scope, "--subscription", config["azure"]["subscriptionId"], "--template-file", str(template), "--parameters", f"@{path}", "--result-format", "FullResourcePayloads", "--no-pretty-print", "--output", "json"], capture_output=True, text=True, check=False)
     private_write(path.parent / "what-if.json", result.stdout)
     private_write(path.parent / "diagnostics.txt", result.stderr)

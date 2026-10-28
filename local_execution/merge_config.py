@@ -20,6 +20,7 @@ DEFAULT_OUTPUT_ROOT = ROOT / "temp/local-config-merge"
 PLACEHOLDER = re.compile(r"REPLACE_[A-Z0-9_]+")
 OPTION_SPECS = {
     "single-validation-identity": (2, "singleValidationIdentityAlternative", "local"),
+    "hub-egress": (3, "hubEgress", "section"),
     "automatic-api-certificate": (4, "optionalAutomaticApiCertificate", "section"),
     "database-admin-identity": (5, "separateDatabaseAdminIdentity", "section"),
     "legacy-master-key-salt": (5, "legacyMasterKeySaltCompatibility", "section"),
@@ -85,6 +86,7 @@ def derived_values(config):
     network = config.get("parameters", {}).get("network", {})
     bootstrap = config.get("parameters", {}).get("bootstrap", {})
     certificate = config.get("parameters", {}).get("certificate-vault", {})
+    hub = config.get("parameters", {}).get("hub", {})
     local = config.get("localExecution", {})
     host = local.get("executionHost", {})
     runtime_inputs = local.get("runtimeInputs", {})
@@ -101,6 +103,8 @@ def derived_values(config):
         "REPLACE_RUNNER_VNET_RESOURCE_ID": host.get("virtualNetworkId"),
         "REPLACE_GLOBALLY_UNIQUE_ACR_NAME": platform.get("containerRegistryName"),
         "REPLACE_CERTIFICATE_VAULT_NAME": certificate.get("vaultName"),
+        "REPLACE_HUB_RESOURCE_GROUP": hub.get("resourceGroupName"),
+        "REPLACE_HUB_VNET": hub.get("virtualNetworkName"),
         "REPLACE_GLOBALLY_UNIQUE_CERTIFICATE_VAULT_NAME": certificate.get("vaultName"),
         "REPLACE_SUPPORTED_PG_SKU": stage5.get("postgresqlSkuName"),
         "REPLACE_LOCAL_OPERATOR_UAMI_PRINCIPAL_ID": config.get("databaseAccess", {}).get("migrationPrincipalId"),

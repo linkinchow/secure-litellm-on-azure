@@ -23,6 +23,9 @@ for file in \
   infra/certificate-vault/main.bicep \
   infra/aks-ingress-role/main.bicep \
   infra/runner-target-connectivity/main.bicep \
+  infra/hub/main.bicep \
+  infra/modules/hub-network/main.bicep \
+  infra/modules/hub-egress/main.bicep \
   infra/modules/network-foundation/main.bicep \
   infra/modules/firewall-egress/main.bicep \
   infra/modules/aks-network/main.bicep \

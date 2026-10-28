@@ -11,8 +11,8 @@ import re
 import subprocess
 
 from scripts.customer_migration import (
-    COMPONENTS, ROOT, MigrationError, active_stages, approval_policy, availability_zones, configured, fingerprint,
-    prepare, private_write, require, stage_fingerprint, validate_config, validate_evidence,
+    COMPONENTS, ROOT, SUBSCRIPTION_COMPONENTS, MigrationError, active_stages, approval_policy, availability_zones, configured,
+    fingerprint, prepare, private_write, require, stage_fingerprint, validate_config, validate_evidence,
 )
 from scripts.workflow_diagnostics import command_failure_summary, command_name, diagnostic_exit
 
@@ -21,6 +21,10 @@ def deployment_name(config, stage, component):
     base = f"llmgw-{config['environment']}-s{stage}-{component}"
     if stage == 0 and component == "bootstrap":
         scope = fingerprint({"location": config["location"], "targetResourceGroup": config["target"]["resourceGroup"].lower()})[:8]
+        return f"{base}-{scope}"
+    if stage == 0 and component == "hub":
+        # Subscription deployment names are location-bound; one hub per region gets its own receipt.
+        scope = fingerprint({"location": config["location"], "hubResourceGroup": config["parameters"]["hub"]["resourceGroupName"].lower()})[:8]
         return f"{base}-{scope}"
     if stage == 9 and component in {"edge", "dns-checkpoint"}:
         from scripts.app_gateway import is_app_gateway
@@ -49,6 +53,16 @@ def assert_change_scope(config, component, changes, connectivity=None):
         if change["changeType"] in {"NoChange", "Ignore"}:
             continue
         resource = change.get("resourceId", "").lower()
+        if component == "hub":
+            from scripts.hub_network import hub_change_allowed
+            require(hub_change_allowed(config, resource), "Hub plan attempts to modify a resource outside the hub resource group")
+            continue
+        if component == "platform":
+            from scripts.hub_network import egress_mode, platform_change_allowed
+            if egress_mode(config) == "hub":
+                external_role = any(resource.startswith(account + "/providers/microsoft.authorization/roleassignments/") for account in external_accounts)
+                require(external_role or platform_change_allowed(config, resource, allowed_group), "Hub egress plan attempts to modify a resource outside the target group, its hub peering and rule collection group, or a spoke firewall")
+                continue
         if component == "runner-target-connectivity":
             from scripts.runner_target_connectivity import target_connectivity_resource_ids
             require(resource in target_connectivity_resource_ids(config, connectivity), "Target connectivity plan attempts to modify an unapproved resource")
@@ -77,7 +91,7 @@ def assert_change_scope(config, component, changes, connectivity=None):
             )
             require(resource.startswith(prefix) and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", resource.removeprefix(prefix)), "AKS network role plan attempts to modify an unapproved resource")
             continue
-        local = resource.startswith(allowed_group + "/") or (component == "bootstrap" and resource == allowed_group)
+        local = resource.startswith(allowed_group + "/") or (component in SUBSCRIPTION_COMPONENTS and resource == allowed_group)
         external_role = component == "platform" and any(
             resource.startswith(account + "/providers/microsoft.authorization/roleassignments/")
             for account in external_accounts
@@ -409,7 +423,14 @@ def deploy_component(config, stage, component, revision, operation, previous, di
     if component == "runner-target-connectivity":
         from scripts.runner_target_connectivity import inspect_target_connectivity
         connectivity = inspect_target_connectivity(config, azure)
+    if component == "hub":
+        from scripts.hub_network import inspect_hub
+        inspect_hub(config, azure)
     resolved = resolve_origin(config, component, azure)
+    if component == "platform" and stage >= 4:
+        from scripts.hub_network import egress_mode, resolve_hub
+        if egress_mode(config) == "hub":
+            resolved["parameters"]["platform"]["stage4Hub"] = resolve_hub(config, azure)
     template, path = prepare(resolved, stage, component, directory)
     if component == "runner-target-connectivity":
         document = json.loads(path.read_text())
@@ -477,7 +498,7 @@ def deploy_component(config, stage, component, revision, operation, previous, di
         if result.returncode:
             raise MigrationError(f"Bicep compilation failed: {command_failure_summary(result.stdout, result.stderr, result.returncode)}")
     template_hash = hashlib.sha256(compiled.read_bytes()).hexdigest()
-    scope = "sub" if component == "bootstrap" else "group"
+    scope = "sub" if component in SUBSCRIPTION_COMPONENTS else "group"
     scope_args = ["--location", config["location"]] if scope == "sub" else ["--resource-group", config["legacy" if component in {"monitoring", "legacy-logging"} else "target"]["resourceGroup"]]
     common = [*scope_args, "--name", deployment_name(config, stage, component), "--template-file", str(compiled), "--parameters", f"@{path}"]
     response = azure.scoped(["deployment", scope, "what-if", *common, "--result-format", "FullResourcePayloads", "--no-pretty-print"])

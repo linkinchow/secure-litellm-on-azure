@@ -24,6 +24,8 @@ spec:
         app.kubernetes.io/component: gateway
     spec:
       serviceAccountName: litellm
+      nodeSelector:
+        workload: litellm
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true

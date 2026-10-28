@@ -65,6 +65,9 @@ param upgradeChannel string = 'patch'
 ])
 param nodeOSUpgradeChannel string = 'NodeImage'
 
+@description('Taint the system pool CriticalAddonsOnly=true:NoSchedule so only system add-ons run there. Every workload this platform renders selects the user pool (workload=litellm) either way. Turning this on for an existing pool changes its taints in place; pods without the toleration are not evicted but are no longer scheduled there, so drain the system nodes in an approved window.')
+param systemPoolCriticalAddonsOnly bool = false
+
 @description('Resource tags.')
 param tags object = {}
 
@@ -118,6 +121,9 @@ resource cluster 'Microsoft.ContainerService/managedClusters@2025-01-01' = {
         upgradeSettings: {
           maxSurge: '33%'
         }
+        nodeTaints: systemPoolCriticalAddonsOnly ? [
+          'CriticalAddonsOnly=true:NoSchedule'
+        ] : null
       }
     ]
     apiServerAccessProfile: {
@@ -211,6 +217,7 @@ resource userPool 'Microsoft.ContainerService/managedClusters/agentPools@2025-01
     upgradeSettings: {
       maxSurge: '33%'
     }
+    // Every platform-rendered pod template selects this label; keep it in step with USER_POOL_SELECTOR in scripts/customer_migration.py.
     nodeLabels: {
       workload: 'litellm'
     }

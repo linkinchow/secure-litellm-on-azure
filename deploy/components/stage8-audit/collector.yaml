@@ -30,6 +30,8 @@ spec:
         azure.workload.identity/use: "true"
     spec:
       serviceAccountName: otel-collector
+      nodeSelector:
+        workload: litellm
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true

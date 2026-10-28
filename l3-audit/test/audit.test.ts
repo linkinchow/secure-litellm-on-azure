@@ -298,6 +298,9 @@ test('manifest uses two replicas, per-replica PVC, immutable image and only priv
   assert.ok(text.includes('"kind":"StatefulSet"')); assert.ok(text.includes('"replicas":2'));
   assert.ok(text.includes('volumeClaimTemplates')); assert.ok(!text.includes('NodePort'));
   assert.ok(!text.includes('LoadBalancer')); assert.ok(!text.includes('api_key'));
+  const workload = documents.find(item => (item as { kind: string }).kind === 'StatefulSet') as
+    { spec: { template: { spec: { nodeSelector?: Record<string, string> } } } };
+  assert.deepEqual(workload.spec.template.spec.nodeSelector, { workload: 'litellm' });
 });
 test('zone-redundant manifest spreads replicas across zones on ZRS spool disks', () => {
   const settings = { image: 'example.azurecr.io/l3@sha256:' + 'a'.repeat(64),

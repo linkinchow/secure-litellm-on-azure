@@ -27,6 +27,8 @@ type stage4AksConfiguration = {
   availabilityZones: string[]?
   upgradeChannel: ('none' | 'patch' | 'stable' | 'rapid' | 'node-image')?
   nodeOSUpgradeChannel: ('None' | 'Unmanaged' | 'NodeImage' | 'SecurityPatch')?
+  @description('True taints the system pool CriticalAddonsOnly=true:NoSchedule; enable it on an existing cluster only in a maintenance window.')
+  systemPoolCriticalAddonsOnly: bool?
 }
 
 type azureOpenAIConnection = {
@@ -271,6 +273,7 @@ module privateAks '../modules/private-aks/main.bicep' = if (deployStage4) {
     availabilityZones: stage4Aks.?availabilityZones ?? []
     upgradeChannel: stage4Aks.?upgradeChannel ?? 'patch'
     nodeOSUpgradeChannel: stage4Aks.?nodeOSUpgradeChannel ?? 'NodeImage'
+    systemPoolCriticalAddonsOnly: stage4Aks.?systemPoolCriticalAddonsOnly ?? false
     podCidr: stage4Network.podCidr
     serviceCidr: stage4Network.serviceCidr
     dnsServiceIp: stage4Network.dnsServiceIp

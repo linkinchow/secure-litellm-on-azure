@@ -289,13 +289,22 @@ class RuntimeSafetyTests(unittest.TestCase):
             "resources": {"requests": {"cpu": "250m", "memory": "1Gi"}, "limits": {"cpu": "1", "memory": "2Gi"}},
             **{name: {"httpGet": {"path": "/health/liveliness", "port": 4000}} for name in ("startupProbe", "readinessProbe", "livenessProbe")},
         }
-        deployment = {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "litellm", "namespace": "litellm"}, "spec": {"replicas": 2, "template": {"spec": {"automountServiceAccountToken": False, "securityContext": {"runAsNonRoot": True}, "containers": [container]}}}}
+        deployment = {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "litellm", "namespace": "litellm"}, "spec": {"replicas": 2, "template": {"spec": {"automountServiceAccountToken": False, "nodeSelector": {"workload": "litellm"}, "securityContext": {"runAsNonRoot": True}, "containers": [container]}}}}
         documents = [deployment] + [{"apiVersion": "v1", "kind": kind, "metadata": {"name": "synthetic", "namespace": "litellm"}} for kind in ("NetworkPolicy", "PodDisruptionBudget", "SecretProviderClass")]
         check_application(documents, 6, customer_config())
         for updates in ({"image": "registry.invalid/litellm:latest"}, {"env": [{"name": "DATABASE_URL", "value": "secret"}]}, {"envFrom": [{"secretRef": {"name": "all"}}]}, {"securityContext": {"privileged": True}}):
             modified = copy.deepcopy(documents)
             modified[0]["spec"]["template"]["spec"]["containers"][0].update(updates)
             with self.subTest(updates=updates), self.assertRaises(ValueError):
+                check_application(modified, 6, customer_config())
+        for selector in (None, {}, {"workload": "system"}, {"kubernetes.azure.com/mode": "system"}):
+            modified = copy.deepcopy(documents)
+            pod = modified[0]["spec"]["template"]["spec"]
+            if selector is None:
+                del pod["nodeSelector"]
+            else:
+                pod["nodeSelector"] = selector
+            with self.subTest(selector=selector), self.assertRaisesRegex(ValueError, "user node pool"):
                 check_application(modified, 6, customer_config())
 
     def test_legacy_publish_plans_without_patch_and_executes_sequentially(self):

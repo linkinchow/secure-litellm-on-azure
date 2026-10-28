@@ -19,6 +19,7 @@ def validate(path: Path) -> None:
         pod = item["spec"]["template"]["spec"]
         assert pod["automountServiceAccountToken"] is False
         assert pod["securityContext"]["runAsNonRoot"] is True
+        assert pod["nodeSelector"] == {"workload": "litellm"}
         for container in pod["containers"]:
             assert container["securityContext"]["allowPrivilegeEscalation"] is False
             assert container["securityContext"]["readOnlyRootFilesystem"] is True
@@ -47,6 +48,7 @@ def validate(path: Path) -> None:
     assert job["suspend"] is True and job["concurrencyPolicy"] == "Forbid"
     worker = job["jobTemplate"]["spec"]["template"]["spec"]
     assert worker["serviceAccountName"] == "l3-retention"
+    assert worker["nodeSelector"] == {"workload": "litellm"}
     assert worker["automountServiceAccountToken"] is False
     assert worker["containers"][0]["securityContext"]["readOnlyRootFilesystem"] is True
     collector = yaml.safe_load(next(item["data"]["collector-config.yaml"] for item in config_maps if "collector-config.yaml" in item.get("data", {})))

@@ -39,6 +39,7 @@ def validate(path: Path) -> None:
         assert deployment["replicas"] == 2
         pod = deployment["template"]["spec"]
         assert pod["serviceAccountName"] == name
+        assert pod["nodeSelector"] == {"workload": "litellm"}
         assert pod["automountServiceAccountToken"] is False
         assert pod["securityContext"]["runAsNonRoot"] is True
         assert pod["securityContext"]["seccompProfile"]["type"] == "RuntimeDefault"
@@ -68,6 +69,7 @@ def validate(path: Path) -> None:
             "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": f"llm-{plane}-ingress"}},
             "podSelector": {"matchLabels": {"app.kubernetes.io/component": "controller"}},
         }]
+    assert deployments["litellm"]["spec"]["template"]["spec"]["nodeSelector"] == {"workload": "litellm"}
     backend_env = deployments["litellm"]["spec"]["template"]["spec"]["containers"][0]["env"]
     assert not any(item["name"] == "AZURE_CLIENT_ID" for item in backend_env)
     policy_map = next(item for item in by_kind["ConfigMap"].values() if "policy.json" in item.get("data", {}))

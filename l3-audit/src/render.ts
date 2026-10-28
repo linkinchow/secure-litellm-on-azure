@@ -48,6 +48,7 @@ export function render(settings: DeploymentSettings): object[] {
       updateStrategy: { type: 'RollingUpdate' },
       template: { metadata: { labels: { ...labels, 'azure.workload.identity/use': 'true' } }, spec: {
         serviceAccountName: 'l3-audit', automountServiceAccountToken: false, terminationGracePeriodSeconds: 60,
+        nodeSelector: { workload: 'litellm' },
         securityContext: { runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001,
           seccompProfile: { type: 'RuntimeDefault' } },
         topologySpreadConstraints: [{ maxSkew: 1, topologyKey: 'kubernetes.io/hostname',

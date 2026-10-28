@@ -355,6 +355,16 @@ AZURE_DATABASE_URL_TEMPLATE是后续应用清单生成器应从部署输出生�
 
 客户无法批准Microsoft Graph应用权限、且实施方也不能在同等租户条件下验证时，可在Stage6显式选择`application.authentication.mode=native`。该路径不部署Stage7：后台Vault新增独立随机`litellm-ui-password`，API通过Front Door且只接受LiteLLM virtual key；Stage9后Admin通过独立Front Door的WAF来源IP白名单，再使用用户名/密码登录。Master Key不向人工用户分发。Stage9前可从批准私网验证原生UI，edge-bind后私有LB只作为回源，不是日常用户入口。现有AKS Workload Identity、Entra-only PostgreSQL/Redis、Key Vault、API/Admin双LB和原生Spend Logs保留。该路径不包含Entra MFA/Conditional Access、代理guardrail、增强L3或代理collector，必须使用其专属入口、virtual-key、Admin公网出口白名单、UI密码和Stage9证据，不能把本节Stage7验收结果套用过去。完整命令见[本地Stage2–9指南](../local_execution/stage2-9-guide-zh.md#stage6发布新litellm后端)。
 
+#### Codex Responses兼容回调
+
+现象：Codex CLI或VS Code扩展（0.164起）经网关调用Azure OpenAI Responses时返回400 `unknown_parameter`，错误指向`input[N].internal_chat_message_metadata_passthrough.content_item_metadata`；不带该子字段的请求正常。
+
+原因：Codex在每条Responses `input`上附带客户端内部对象`internal_chat_message_metadata_passthrough`。Azure接受该对象及原有子字段（`turn_id`、`content_item_kinds`），但拒绝新增子字段`content_item_metadata`。LiteLLM原样转发input，`drop_params`不处理消息内部字段，上游尚无修复。
+
+处理：应用镜像内置[callbacks.py](../LiteLLM/runtime/callbacks.py)，Stage6生成的config.yaml固定包含`litellm_settings.callbacks: [LiteLLM.runtime.callbacks.codex_passthrough]`，所有部署都启用。回调只在Responses创建/compact请求选定部署后，从每条input删除该字段；在副本上修改，不改调用方对象；不记录、存储或外发正文；无该字段或非Responses调用时不做修改。Codex本地保留自己的副本，功能不受影响。它不是正文采集回调，原生Spend Logs发布只放行这一已审查回调。runtimeSettings不能增删回调；公共镜像的Kustomize静态基线不含此模块，也不注册它。
+
+边界：Azure Responses WebSocket由LiteLLM原生逐帧转发，帧不经过该hook，未覆盖；如WebSocket出现同样400，客户端先使用HTTP Responses（`supports_websockets = false`）。镜像源码检查会在构建出的镜像内按代理相同方式加载并执行该回调；上线仍需新revision镜像签名、重新发布Stage6，并用真实Codex请求验证。
+
 ### Stage7代理身份基础设施
 
 proxy-foundation从平台配置及databaseAccess派生参数，创建API/admin各自UAMI、AKS联邦、独立私有Vault、PE/DNS、诊断和删除锁，自动输出proxyFoundation。各pod身份只能读取本平面Vault；迁移初始化身份在两个Vault获得Secrets Officer，不能把它用于代理pod。默认联邦分别绑定litellm中的llm-api-proxy和llm-admin-proxy。

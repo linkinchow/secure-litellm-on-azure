@@ -54,7 +54,7 @@ jobs:
           python -m unittest tests.test_edge_security_probe tests.test_waf_security_probe
           python -m unittest tests.test_database_roles
           python -m unittest tests.test_azure_postgresql
-          python -m unittest tests.test_azure_application tests.test_schema_migration tests.test_schema_runtime
+          python -m unittest tests.test_azure_application tests.test_schema_migration tests.test_schema_runtime tests.test_codex_passthrough
           python -m unittest tests.test_runtime_secrets tests.test_backend_access
           python -m unittest tests.test_backend_manifest
           python -m unittest tests.test_optional_l3
@@ -113,6 +113,13 @@ jobs:
         run: python -m unittest -b tests.test_azure_schema_container
       - name: Build reviewed Azure application image
         run: docker build --network none -f LiteLLM/runtime/Dockerfile -t litellm-azure-runtime:ci .
+      - name: Verify shipped callbacks inside the application image
+        run: >-
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,nosuid,size=64m
+          --env RUN_RUNTIME_CALLBACK_TESTS=1
+          --mount "type=bind,src=$PWD/tests,dst=/opt/llmgw-tests/tests,readonly" --workdir /opt/llmgw-tests
+          --entrypoint /app/.venv/bin/python litellm-azure-runtime:ci
+          -m unittest -b tests.test_codex_passthrough
 
   oss-callbacks:
     runs-on: ubuntu-24.04

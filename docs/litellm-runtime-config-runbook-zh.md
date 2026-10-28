@@ -46,6 +46,7 @@ patch 仅合并明确提供的叶子字段。省略表示保留，不支持 `nul
 
 不支持修改模型列表、模型别名/回退、Master Key、UI_PASSWORD、数据库 URL、Redis 连接、
 Workload Identity、token refresh、文件/数据库模型存储模式、正文日志/留存、任意 hook 或外部 endpoint。
+Stage 6 生成的配置固定注册镜像内置的 Codex Responses 兼容回调（现象、原因与边界见[部署指南](customer-deployment-workflows-zh.md)的“Codex Responses兼容回调”），本流程保留该回调，不能增删。
 
 ## 3. 关闭环境凭据登录的前提
 

@@ -20,6 +20,11 @@ from scripts.model_configuration import connection_endpoint, rendered_models, va
 from scripts.runtime_configuration import apply_runtime_settings, runtime_overrides
 
 
+# Callbacks shipped in the reviewed runtime image (LiteLLM/runtime/callbacks.py). They only adjust
+# outgoing requests and never log, store or export content.
+BACKEND_CALLBACKS = ("LiteLLM.runtime.callbacks.codex_passthrough",)
+
+
 def application_authentication(config):
     authentication = config.get("application", {}).get("authentication", {"mode": "entra"})
     require(isinstance(authentication, dict) and authentication.get("mode") in {"entra", "native"}, "Application authentication mode must be entra or native")
@@ -80,6 +85,7 @@ def render_backend_manifest(config, platform, versions, host, endpoint_subnet):
     affinities = next(iter(runtime["router_settings"]["model_group_affinity_config"].values()))
     runtime["router_settings"]["model_group_affinity_config"] = {name: list(affinities) for name in sorted({model["modelGroup"] for model in settings["models"]})}
     runtime["general_settings"].update(disable_prisma_schema_update=True, store_model_in_db=False)
+    runtime["litellm_settings"]["callbacks"] = list(BACKEND_CALLBACKS)
     runtime = apply_runtime_settings(runtime, runtime_overrides(config))
     config_text = yaml.safe_dump(runtime, sort_keys=False)
     config_name = "litellm-config-" + hashlib.sha256(config_text.encode()).hexdigest()[:12]

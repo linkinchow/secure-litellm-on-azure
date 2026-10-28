@@ -30,7 +30,11 @@ def render_native_audit(config, source):
     require(len(candidates) == 1, "Native audit requires exactly one managed backend configuration")
     config_map = candidates[0]
     runtime = yaml.safe_load(config_map["data"]["config.yaml"])
-    require(not runtime.get("litellm_settings", {}).get("callbacks") and not runtime.get("litellm_settings", {}).get("success_callback"), "Review content callbacks before enabling native audit")
+    from scripts.backend_manifest import BACKEND_CALLBACKS
+    callbacks = runtime.get("litellm_settings", {}).get("callbacks") or []
+    require(isinstance(callbacks, list) and all(item in BACKEND_CALLBACKS for item in callbacks)
+            and not runtime.get("litellm_settings", {}).get("success_callback"),
+            "Review content callbacks before enabling native audit; only the reviewed request-compatibility callbacks are allowed")
     from scripts.optional_l3 import enabled
     runtime["general_settings"].update(disable_spend_logs=False, store_prompts_in_spend_logs=not enabled(config),
                                        maximum_spend_logs_retention_period=f"{settings['retentionDays']}d",

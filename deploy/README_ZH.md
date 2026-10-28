@@ -42,7 +42,7 @@ Base清单包含：
 - `test`：2副本；
 - `prod`：2副本。
 
-静态Base固定官方LiteLLM `1.104.0` digest；当前运行时路径使用`1.104.0`固定源码构建，发布生成器要求批准的私有ACR digest。静态清单只用于渲染/验证，不能冒充当前构建的部署清单。镜像扫描、SBOM和签名需走受控供应链；版本、漏洞、GPT-6和数据库兼容的有界证据见[1.104.0升级验证](../docs/litellm-1.104.0-upgrade-validation-2026-10-07.md)。
+静态Base固定官方LiteLLM `1.104.8` digest；当前运行时路径使用`1.104.8`固定源码构建，发布生成器要求批准的私有ACR digest。静态清单只用于渲染/验证，不能冒充当前构建的部署清单。镜像扫描、SBOM和签名需走受控供应链；版本、漏洞、GPT-6和数据库兼容的有界证据见[1.104.0升级验证](../docs/litellm-1.104.0-upgrade-validation-2026-10-07.md)及[1.104.8升级验证](../docs/litellm-1.104.8-upgrade-validation-2026-10-28.md)。
 
 ## 尚未投入环境Overlay
 

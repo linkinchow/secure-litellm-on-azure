@@ -17,7 +17,7 @@ RUNTIME_DOCKERIGNORE = ROOT / "LiteLLM/runtime/Dockerfile.dockerignore"
 HARDENING_REQUIREMENTS = ROOT / "LiteLLM/runtime/security-requirements.txt"
 RUNTIME_CONTRACT = {
     "uid": 10001,
-    "versions": {"litellm": "1.104.0", "anyio": "4.14.2", "PyJWT": "2.15.0"},
+    "versions": {"litellm": "1.104.8", "anyio": "4.14.2", "PyJWT": "2.15.0"},
     "gpt6": {"gpt-6.1": True, "azure/gpt-6.1": True},
     "catalog": {"azure/gpt-6-astra": True, "azure/gpt-6-sol": True, "azure/gpt-6-luna": True},
     "customDeploymentConfig": "AzureOpenAIGPT5Config",

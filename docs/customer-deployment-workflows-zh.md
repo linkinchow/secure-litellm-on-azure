@@ -14,7 +14,7 @@ API/Admin通过Azure Front Door Premium分别连接两条PLS和两个私有入�
 
 客户端API base为`https://<api-domain>/v1`，`model`填写LiteLLM `model_name`别名（托管映射中的`modelGroup`），不是Azure deployment name。入口仅开放固定Responses/Chat/Embedding推理路径，**不开放`/v1/models`**；不能把模型列表请求被拒绝当作推理不可用。
 
-源镜像固定为**1.104.0**；派生镜像digest、秘密版本、身份权限、续期、真实运行与审计/恢复验证仍是门禁。上述有限实测不证明所有UI、客户端协议、生产容量、迁移数据或Stage0–9已签收。迁移、Entra代理和production路径保留各自批准及验收要求；当前greenfield native执行顺序见[本地Stage2–9指南](../local_execution/stage2-9-guide-zh.md)，不需要为此补做旧环境备份、Stage1或Stage7。
+源镜像固定为**1.104.8**；派生镜像digest、秘密版本、身份权限、续期、真实运行与审计/恢复验证仍是门禁。上述有限实测不证明所有UI、客户端协议、生产容量、迁移数据或Stage0–9已签收。迁移、Entra代理和production路径保留各自批准及验收要求；当前greenfield native执行顺序见[本地Stage2–9指南](../local_execution/stage2-9-guide-zh.md)，不需要为此补做旧环境备份、Stage1或Stage7。
 
 ## 先开始演练
 
@@ -107,7 +107,7 @@ Stage4建立私网连接后，才验收`target_image_signature_sbom`，继续使
 
 完整模式执行11个检查组，包括真实PG/schema、JSON/SSE落库、原生UI核心读取、TLS、Prisma、collector、两种应用镜像构建和源镜像扫描。浏览器详细结果及合成截图在忽略目录`temp/native-ui-browser/`，其中`fullManagementAccepted`和`mobileAccepted`保持false。不能把核心读取通过说成所有页面功能已验收。
 
-完整模式同时运行固定LiteLLM 1.95.0到1.104.0的隔离升级：旧镜像digest为`sha256:af806882b7a6ced41658db5b6a7e98ed7b9b51d03b935e0417bf1c8552d688af`，先初始化旧库、写入合成预算及密文、dump/restore到空目标，再执行受控schema升级及应用/浏览器检查。旧版141个迁移在新版189个迁移中并非连续前缀；迁移器仅接受已核对的有序名称/checksum源历史指纹及其后续升级顺序，兼容全新旧版库和另行审查的长期升级库，不改写历史、不自动baseline、不跳过未知迁移。合成记录及旧库历史保持不变，旧版加密值可由新版使用相同签名材料解密。两个LiteLLM SpendLogs索引按上游1.104.0合同由operator在线创建，不在自动迁移中锁表创建。结果在`temp/legacy-upgrade/report.json`。
+完整模式同时运行固定LiteLLM 1.95.0到1.104.8的隔离升级：旧镜像digest为`sha256:af806882b7a6ced41658db5b6a7e98ed7b9b51d03b935e0417bf1c8552d688af`，先初始化旧库、写入合成预算及密文、dump/restore到空目标，再执行受控schema升级及应用/浏览器检查。旧版141个迁移在新版189个迁移中并非连续前缀；迁移器仅接受已核对的有序名称/checksum源历史指纹及其后续升级顺序，兼容全新旧版库和另行审查的长期升级库，不改写历史、不自动baseline、不跳过未知迁移。合成记录及旧库历史保持不变，旧版加密值可由新版使用相同签名材料解密。两个LiteLLM SpendLogs索引按上游1.104.x合同由operator在线创建，不在自动迁移中锁表创建。结果在`temp/legacy-upgrade/report.json`。
 
 这验证的是指定镜像生成的小型合成数据库，不是客户实际镜像digest、完整数据或停机时长。必须先盘点实际数据库大小、Spend Logs/WAL增长、旧镜像digest和迁移历史，再测量备份、传输、恢复、升级、核验及入口切换总耗时。开发人员数量不能直接换算数据库容量；最终写入冻结、最终空目标选择、切流后写入对账和数据回退编排仍未完成。
 

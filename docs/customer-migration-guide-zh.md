@@ -16,13 +16,13 @@
 
 当前实际运行的是**West US 3 greenfield、native-auth、dev/test canary**：Private AKS为`Running/Succeeded`，Azure RBAC、禁用本地账号、WI/OIDC均开启，CNI Overlay，2个system加2个user节点，SKU `Standard_D4s_v4`；API/Admin分别通过Front Door Premium、PLS及私有入口提供服务。用户已确认Admin `/fallback/login`用户名/密码和virtual key的Codex Responses推理可用，用户侧Entra SSO延期。
 
-Admin使用**后台Vault**中独立的`litellm-ui-password`，不是Master Key或证书Vault秘密；WAF当前配置3个逐项批准的公网IPv4 `/32`及1个IPv6 `/128`。只读管理面回读确认PostgreSQL 16 `Ready`、Entra认证启用/密码认证禁用/公网禁用；Redis为`Microsoft.Cache/redisEnterprise Balanced_B0`，default数据库禁用Access Key认证、使用Encrypted协议/端口10000，但集群`publicNetworkAccess=null`不证明公网开启或关闭。ACR Premium禁用admin账号和公网，后台及证书Vault均启用RBAC并禁用公网。源镜像固定1.104.0；秘密、数据面身份、运行、审计和恢复门禁仍有效，不据这些有限实测宣称完整Stage0–9或production签收。
+Admin使用**后台Vault**中独立的`litellm-ui-password`，不是Master Key或证书Vault秘密；WAF当前配置3个逐项批准的公网IPv4 `/32`及1个IPv6 `/128`。只读管理面回读确认PostgreSQL 16 `Ready`、Entra认证启用/密码认证禁用/公网禁用；Redis为`Microsoft.Cache/redisEnterprise Balanced_B0`，default数据库禁用Access Key认证、使用Encrypted协议/端口10000，但集群`publicNetworkAccess=null`不证明公网开启或关闭。ACR Premium禁用admin账号和公网，后台及证书Vault均启用RBAC并禁用公网。源镜像固定1.104.8；秘密、数据面身份、运行、审计和恢复门禁仍有效，不据这些有限实测宣称完整Stage0–9或production签收。
 
 下文既有迁移的备份/旧环境加固/最终数据对账及Entra代理步骤保留，不用于要求当前greenfield补做旧资源操作。当前原生本地执行顺序见[Stage2–9指南](../local_execution/stage2-9-guide-zh.md)；其他环境、migration、Entra和production须按各自配置与批准范围执行，不能复用本次dev/test结果。
 
 ## 1. 迁移原则与入口
 
-采用并行新建、隔离验证和批准客户端试点。旧域名继续指向旧系统，新域名只交给少量获批客户端；旧网关、数据库、密钥/Salt和VMSS业务身份保留到单独批准的退役阶段。不得让1.104.0新版本自动迁移旧生产数据库；新旧网关各自使用独立数据库，不得共用同一个数据库。若以后要求无损承接备份后的新增数据，再进入可选最终迁移，而不是把它作为canary前置条件。
+采用并行新建、隔离验证和批准客户端试点。旧域名继续指向旧系统，新域名只交给少量获批客户端；旧网关、数据库、密钥/Salt和VMSS业务身份保留到单独批准的退役阶段。不得让1.104.8新版本自动迁移旧生产数据库；新旧网关各自使用独立数据库，不得共用同一个数据库。若以后要求无损承接备份后的新增数据，再进入可选最终迁移，而不是把它作为canary前置条件。
 
 **两种“阶段”不要混淆：** 架构阶段0=本手册Stage0–1（可恢复基线和旧环境加固）；架构阶段1=Stage2–9（决策、隔离新建、迁移与发布）。GitHub表单的`stage`填写仓库编号，不是架构阶段号。每个Stage完成验收后才能执行下一Stage的变更。
 
@@ -669,7 +669,7 @@ sha256sum "$SNAPSHOT_DIR/deployments-before.json" > "$SNAPSHOT_DIR/SHA256SUMS"
 
 **阶段验收：** stage=3 draft/confirm；`oidc_scope`、`source_image_sbom_scan`、`target_isolation`。旧名称`image_signature_sbom`不再是Stage3的清单，具体用draft输出。
 
-三项操作及通过标准按本节检查ID逐项核对，资源与源镜像检查顺序见[本地指南Stage3](../local_execution/stage2-9-guide-zh.md#stage3供应链检查和目标基础资源)。source-image附件是明文，核对固定1.104.0基线、派生镜像SBOM和扫描策略结果，不需要解密；platform计划/部署及验收附件仍使用原WORKFLOW_ARTIFACT_KEY，按第3节核对当前revision/config及实际资源。Stage3的ACR公网关闭但尚未建立本阶段之外的私网连接，不要求提前完成Stage4目标镜像签名/拉取。
+三项操作及通过标准按本节检查ID逐项核对，资源与源镜像检查顺序见[本地指南Stage3](../local_execution/stage2-9-guide-zh.md#stage3供应链检查和目标基础资源)。source-image附件是明文，核对固定1.104.8基线、派生镜像SBOM和扫描策略结果，不需要解密；platform计划/部署及验收附件仍使用原WORKFLOW_ARTIFACT_KEY，按第3节核对当前revision/config及实际资源。Stage3的ACR公网关闭但尚未建立本阶段之外的私网连接，不要求提前完成Stage4目标镜像签名/拉取。
 
 | 步骤 | 执行方式 | operation | reviewed_run_id | checked_items / evidence_notes | confirm_environment |
 | --- | --- | --- | --- | --- | --- |
@@ -1450,7 +1450,7 @@ roleRef:
 
 S5-02之后先确认Runner到新PG/Redis/后台Vault的Private DNS及TLS连接、数据库管理员权限，再执行S5-03。database-roles创建独立llmgw_migrator和llmgw_app并授予应用所需数据权限；backend-secrets从旧litellm-env导入原Master/Salt到新Vault，目标已有不一致值或旧Salt不明确时停止，不生成替代值冒充恢复。
 
-restore-target只恢复到Stage5输出绑定的**空目标库**，不使用手填任意DATABASE_URL；非空/失败残留须由DBA评估，不自动DROP或加`--clean`。schema-migrate之后才可发布新版应用，固定1.95.0→1.104.0合成升级已测试，但客户实际历史指纹/扩展/密文必须核对；未知历史不能baseline/reset绕过。
+restore-target只恢复到Stage5输出绑定的**空目标库**，不使用手填任意DATABASE_URL；非空/失败残留须由DBA评估，不自动DROP或加`--clean`。schema-migrate之后才可发布新版应用，固定1.95.0→1.104.0合成升级已测试（1.104.8的189个迁移与之相同，CI已改为1.104.8并须重跑），但客户实际历史指纹/扩展/密文必须核对；未知历史不能baseline/reset绕过。
 
 **输出/失败：** 后台密钥与schema动作保存ARM操作回执，后续application检查其SHA和配置，不手写这些回执。失败可能已部分创建角色、Vault版本或提交迁移；先检查现场再新plan，禁止删除旧数据或密钥以求重跑成功。
 

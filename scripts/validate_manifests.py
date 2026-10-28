@@ -9,7 +9,7 @@ from typing import Any
 
 import yaml
 
-EXPECTED_DIGEST = "sha256:625981c83410a3ea68eb0697590a57ec1d764d634514d54fa5db0591077ee839"
+EXPECTED_DIGEST = "sha256:6cc08e60be3e4ebf0cfb41ef23aed97e9ba4f61702d1e95e533f47ee6d67865f"
 
 
 def fail(message: str) -> None:

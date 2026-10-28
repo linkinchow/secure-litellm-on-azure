@@ -4,6 +4,8 @@
 
 > 现状补充（2026-10-09）：只读 Azure 管理核查确认 West US3 新建 dev/test 的 private AKS Running/Succeeded、Azure CNI overlay、Azure RBAC/禁用本地账户、WI/OIDC；System/User 池各 2 台 `Standard_D4s_v4`。双 API/Admin Front Door Premium、独立 PLS/私有入口与 WAF Prevention 已部署；Admin 否定 SocketAddr IPMatch 白名单同时含三个 IPv4 `/32` 和一个 IPv6 `/128` 精确出口。模型 WI、私网 Entra-only PG/Managed Redis、私有 ACR、分离的后端/证书 Vault 和 Firewall 出站构成当前基线。默认原生 LiteLLM 网关；用户已验证 Admin 密码 fallback 登录及 vkey Codex Responses 推理，**不是 Entra 用户 SSO 或生产就绪**。以下 2026-10-07 隔离测试结论不扩展为 Stage0–9 云端全验收。
 
+> 后续（2026-10-28）：源镜像已改为同分支补丁版`1.104.8`，离线核对结果及剩余实测项见[1.104.8升级验证](litellm-1.104.8-upgrade-validation-2026-10-28.md)。下文仍是`1.104.0`的原始验证记录。
+
 ## 1. 选择结论
 
 当前受审运行基线从LiteLLM `1.98.0`升级到稳定版`1.104.0`，固定镜像为：

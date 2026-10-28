@@ -51,7 +51,7 @@ flowchart TB
 | 网络隔离 | Private AKS、Private Endpoint/DNS、受控出口和默认拒绝网络策略 |
 | 身份授权 | 当前native API使用virtual key；Admin为LiteLLM用户名/密码fallback登录，不是用户Entra SSO。Admin WAF Prevention限制精确批准的公网`/32`和`/128`出口；Azure模型访问使用Workload Identity |
 | 数据与秘密 | Entra-only PostgreSQL/Redis；私有backend Vault与certificate Vault分离；备份与恢复控制须验收 |
-| 运行基线 | LiteLLM `1.104.0`固定源码构建及digest交付；非Root/只读容器、高可用及路由组件 |
+| 运行基线 | LiteLLM `1.104.8`固定源码构建及digest交付；非Root/只读容器、高可用及路由组件 |
 | 审计与观测 | 原生Spend Logs配置及按模式区分的门禁、元数据监控；L3、Trace及Guardrail组件按需选用 |
 | 客户交付 | Environment配置、OIDC、阶段证据门禁、IaC预览及离线验证 |
 

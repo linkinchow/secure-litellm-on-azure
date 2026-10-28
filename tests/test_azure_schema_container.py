@@ -25,7 +25,7 @@ from scripts.database_roles import grant_roles
 from tests.test_azure_postgresql import TEMPLATE
 
 
-LITELLM_IMAGE = "docker.litellm.ai/berriai/litellm@sha256:625981c83410a3ea68eb0697590a57ec1d764d634514d54fa5db0591077ee839"
+LITELLM_IMAGE = "docker.litellm.ai/berriai/litellm@sha256:6cc08e60be3e4ebf0cfb41ef23aed97e9ba4f61702d1e95e533f47ee6d67865f"
 LEGACY_LITELLM_IMAGE = "docker.litellm.ai/berriai/litellm@sha256:af806882b7a6ced41658db5b6a7e98ed7b9b51d03b935e0417bf1c8552d688af"
 POSTGRES_IMAGE = "postgres@sha256:e17e86066e5ef83e0952a9347f5c792b7ece00972e2aa787a6986f471b3dd3d5"
 

@@ -8,7 +8,11 @@ export const paths = new Set(['/chat/completions', '/v1/chat/completions', '/res
   '/v1/responses', '/embeddings', '/v1/embeddings']);
 export const wsPaths = new Set(['/responses', '/v1/responses']);
 export const sha = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
-export type Outcome = 'completed' | 'failed' | 'incomplete' | 'disconnected' | 'unverified';
+// http-error: upstream answered with HTTP status >= 400 (see status); response-error: upstream reported a
+// failure event in a stream or WSS turn; failed: the proxy could not reach or talk to the upstream.
+export type Outcome = 'completed' | 'http-error' | 'response-error' | 'failed' | 'incomplete' | 'disconnected' | 'unverified';
+// Business results whose exchange was fully observed; they are not an audit risk unless a gap is set.
+const businessOutcomes = new Set<Outcome>(['completed', 'http-error', 'response-error']);
 export interface Part { direction: 'request' | 'response'; encoding: 'base64'; data: string }
 export interface Index {
   id: string; observedAt: string; transport: 'http' | 'wss'; path: string;
@@ -133,7 +137,7 @@ export class Capture {
     const selected = this.parts.filter(part => !embedding || part.direction === 'request');
     const parts = selected.map(part => ({ direction: part.direction, encoding: 'base64' as const,
       data: part.data.toString('base64') }));
-    this.index.risk = this.index.gap || (outcome === 'completed' ? '' : outcome);
+    this.index.risk = this.index.gap || (businessOutcomes.has(outcome) ? '' : outcome);
     this.index.contentSha256 = sha(JSON.stringify(parts));
     this.index.blob = `content/${this.index.observedAt.slice(0, 10).replaceAll('-', '/')}/${this.index.id}.json`;
     this.budget.bytes -= this.index.capturedBytes;

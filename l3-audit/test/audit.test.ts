@@ -181,8 +181,12 @@ test('WSS tool roundtrip records each turn and continuation link; disconnect is 
   assert.equal(records.length, 2); assert.equal(records[0]!.index.responseHash, records[1]!.index.previousResponseHash);
   assert.equal(records[0]!.index.outcome, 'completed'); assert.equal(records[1]!.index.outcome, 'completed');
   assert.ok(Buffer.from(records[1]!.parts[0]!.data, 'base64').toString().includes('function_call_output'));
+  session.client.feed(frame({ type: 'response.create', model: 'not-allowed', input: 'rejected' }, true));
+  session.server.feed(frame({ type: 'error', error: { code: 'model_not_found' } }));
+  assert.equal(records[2]!.index.outcome, 'response-error'); assert.equal(records[2]!.index.risk, '');
   session.client.feed(frame({ type: 'response.create', model: 'coding', input: 'unfinished' }, true)); session.close();
-  assert.equal(records[2]!.index.outcome, 'disconnected'); assert.deepEqual(gaps, []);
+  assert.equal(records[3]!.index.outcome, 'disconnected'); assert.equal(records[3]!.index.risk, 'disconnected');
+  assert.deepEqual(gaps, []);
 });
 async function listen(server: http.Server): Promise<URL> {
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
@@ -213,10 +217,34 @@ test('real HTTP/SSE keeps bytes and headers; upstream 400 and audit sink failure
     const embeddings = await fetch(new URL('/v1/embeddings', url), { method: 'POST', body: '{"model":"embedding","input":"test"}' });
     assert.equal(await embeddings.text(), '{"data":[{"embedding":[1,2,3]}]}');
     assert.equal(records.length, 3);
-    assert.equal(records[0]!.index.outcome, 'failed');
-    assert.equal(records[1]!.index.outcome, 'completed');
+    assert.equal(records[0]!.index.outcome, 'http-error'); assert.equal(records[0]!.index.status, 400);
+    assert.equal(records[0]!.index.risk, ''); assert.equal(records[0]!.index.gap, '');
+    assert.equal(records[1]!.index.outcome, 'completed'); assert.equal(records[1]!.index.risk, '');
     assert.ok(records[2]!.parts.every(part => part.direction === 'request'));
   } finally { proxy.closeAllConnections(); upstream.closeAllConnections(); await Promise.all([new Promise<void>(r => proxy.close(() => r())), new Promise<void>(r => upstream.close(() => r()))]); }
+});
+test('upstream failure events are business outcomes; only an unreachable upstream is audit risk', async () => {
+  const upstream = http.createServer((request, response) => {
+    request.resume();
+    request.on('end', () => {
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.end('data: {"type":"response.failed","response":{"id":"resp-failed","status":"failed"}}\n\n');
+    });
+  });
+  const upstreamUrl = await listen(upstream), records: RecordEnvelope[] = [];
+  const proxy = createProxy(upstreamUrl, r => records.push(r), () => ({})), url = await listen(proxy);
+  const closed = http.createServer(), closedUrl = await listen(closed);
+  await new Promise<void>(r => closed.close(() => r()));
+  const unreachable = createProxy(closedUrl, r => records.push(r), () => ({})), unreachableUrl = await listen(unreachable);
+  try {
+    await (await fetch(new URL('/v1/responses', url), { method: 'POST', body: '{"model":"coding"}' })).text();
+    const failed = await fetch(new URL('/v1/responses', unreachableUrl), { method: 'POST', body: '{"model":"coding"}' });
+    assert.equal(failed.status, 502); await failed.text();
+    assert.deepEqual(records.map(r => [r.index.outcome, r.index.risk]), [['response-error', ''], ['failed', 'failed']]);
+  } finally {
+    for (const server of [proxy, upstream, unreachable]) server.closeAllConnections();
+    await Promise.all([proxy, upstream, unreachable].map(server => new Promise<void>(r => server.close(() => r()))));
+  }
 });
 test('HTTP records link to LiteLLM Spend Logs by response id hash and call id', async () => {
   const padding = 'x'.repeat(100000);

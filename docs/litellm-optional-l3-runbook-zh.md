@@ -38,6 +38,12 @@ Admin Front Door / Admin 登录链路保持直连 LiteLLM，不经过新代理�
   不自动解压或推断压缩SSE的终态，未知编码明确标记缺口。
 - LAW 仅存调用 ID、时间、模型、Key SHA-256、轮次关联哈希、结果状态、字节数、
   内容哈希、Blob 相对路径及运行风险。无正文预览、无模型语义摘要。
+- `Record.outcome`区分业务结果与审计风险：`completed`为观测到正常终态；`http-error`为上游
+  返回HTTP≥400（如Key无效、无模型权限，具体码见`status`）；`response-error`为SSE/WSS内
+  上游报告的`error`/`response.failed`事件。这三类是业务结果，正文已完整采集，**不写`risk`**。
+  `failed`（代理连不上上游）、`incomplete`、`disconnected`、`unverified`及任何非空`gap`才写入
+  `Record.risk`，并触发`delivery-risk`告警。旧版本曾把HTTP 4xx记为`failed`并写入风险，
+  升级前的历史记录按`status`区分，不要据此判断审计交付失败。
 - 请求体里客户自己写入的代码、PII、Secret 仍属于原文；本期**没有正文 DLP、内容分类
   或 Prompt Injection 检测**。客户必须批准允许采集的数据类别。
 - Key 哈希表示凭据关联，不代表员工的已验证 Entra 身份；不信任客户端自填 user/metadata 作为审计主体。

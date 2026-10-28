@@ -35,6 +35,7 @@ class ReleaseReportTests(unittest.TestCase):
                 "logAnalyticsWorkspaceName": {"value": "target-logs"},
                 "rateLimitPerMinute": {"value": 600},
                 "adminRateLimitPerMinute": {"value": 120},
+                "modelListRateLimitPerMinute": {"value": 120},
             },
         }
 
@@ -56,6 +57,7 @@ class ReleaseReportTests(unittest.TestCase):
         self.assertEqual(report["frontDoorId"], self.live["frontDoorId"])
         self.assertEqual(report["privateOrigin"], self.live["privateOrigin"])
         self.assertEqual(report["logAnalyticsWorkspaceName"], "target-logs")
+        self.assertEqual(report["modelListRateLimitPerMinute"], 120)
         self.assertFalse(report["telemetryEnabled"])
         self.assertNotIn("checks", report)
         self.assertEqual(self.azure.scoped.call_args.args[0][:3], ["deployment", "group", "show"])
@@ -85,7 +87,7 @@ class ReleaseReportTests(unittest.TestCase):
         with self.assertRaisesRegex(MigrationError, "Succeeded"):
             self.generate()
         self.azure.scoped.return_value["state"] = "Succeeded"
-        for field in ("logAnalyticsWorkspaceName", "rateLimitPerMinute", "adminRateLimitPerMinute"):
+        for field in ("logAnalyticsWorkspaceName", "rateLimitPerMinute", "adminRateLimitPerMinute", "modelListRateLimitPerMinute"):
             with self.subTest(field=field):
                 actual = self.azure.scoped.return_value["parameters"][field]["value"]
                 self.azure.scoped.return_value["parameters"][field]["value"] = "old-value"

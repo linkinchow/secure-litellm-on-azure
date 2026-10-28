@@ -14,9 +14,11 @@ import yaml
 try:
     from scripts.render_stage7_domain import ROOT, domain_hosts, render
     from scripts.customer_migration import admin_source_cidrs, front_door_private_link_location
+    from scripts.api_protocol import MODEL_LIST_RATE_LIMIT
 except ModuleNotFoundError:
     from render_stage7_domain import ROOT, domain_hosts, render
     from customer_migration import admin_source_cidrs, front_door_private_link_location
+    from api_protocol import MODEL_LIST_RATE_LIMIT
 
 PREPARE_CHECKS = {
     "private_origin_tls", "origin_bypass_denied", "admin_source_ip_allowlist",
@@ -100,6 +102,9 @@ def validate_release(config: dict, now: datetime | None = None, required_approve
         raise ValueError("Invalid rate limit")
     if type(config.get("adminRateLimitPerMinute")) is not int or not 1 <= config["adminRateLimitPerMinute"] <= 10000:
         raise ValueError("Invalid Admin rate limit")
+    model_list = config.get("modelListRateLimitPerMinute", MODEL_LIST_RATE_LIMIT)
+    if type(model_list) is not int or not 1 <= model_list <= 10000:
+        raise ValueError("Invalid model-list rate limit")
     if config.get("wafMode") != ("Prevention" if phase == "production" else "Detection"):
         raise ValueError("Prepare/canary use Detection; production requires reviewed Prevention")
     identity = "edgeId" if edge_type == "applicationGateway" else "frontDoorId"
@@ -169,6 +174,7 @@ def generate(config: dict, output_dir: Path) -> None:
             })})
     overlay_path.write_text(yaml.safe_dump(overlay, sort_keys=False), encoding="utf-8")
     parameters = {name: {"value": config[name]} for name in ("environmentName", "privateOrigin", "adminPrivateOrigin", "adminAllowedCidrs", "logAnalyticsWorkspaceName", "wafMode", "rateLimitPerMinute", "adminRateLimitPerMinute")}
+    parameters["modelListRateLimitPerMinute"] = {"value": config.get("modelListRateLimitPerMinute", MODEL_LIST_RATE_LIMIT)}
     parameters.update({"baseDomain": {"value": domain_hosts(config["baseDomain"])["api"].removeprefix("llm-api.")}, "deployEdge": {"value": True}, "enableApiTraffic": {"value": config["phase"] != "prepare"}, "enableAdminTraffic": {"value": config["phase"] != "prepare"}})
     (output_dir / "edge.parameters.json").write_text(json.dumps({"$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#", "contentVersion": "1.0.0.0", "parameters": parameters}, indent=2) + "\n", encoding="utf-8")
     fingerprint = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()

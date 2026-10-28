@@ -1,4 +1,5 @@
 """Plan-bound API WAF method update; preserves traffic, Admin and policy mode."""
+# Upgrades the POST-only or Responses-only baseline to the current method gate and model-list rate limit.
 
 import argparse
 import copy
@@ -7,7 +8,7 @@ from pathlib import Path
 
 from local_execution.runner import authenticate_azure, load_config, operation_root, reviewed_revision
 from local_execution.release_report import generate_report
-from scripts.api_protocol import api_method_rules
+from scripts.api_protocol import MODEL_LIST_RATE_LIMIT, MODEL_LIST_RATE_RULE, api_method_rules, model_list_rate_rule
 from scripts.backend_manifest import application_authentication
 from scripts.customer_migration import ROOT, MigrationError, fingerprint, private_write, require
 from scripts.edge_binding import deployed_edge, deployed_resource
@@ -33,7 +34,7 @@ def normalized_rule(rule):
     return value
 
 
-def desired_waf(live, identifier):
+def desired_waf(live, identifier, model_list_threshold=MODEL_LIST_RATE_LIMIT):
     require(live.get("id", "").lower() == identifier.lower(), "API WAF scope mismatch")
     sku = live.get("sku")
     require(isinstance(sku, dict) and sku.get("name") == "Premium_AzureFrontDoor",
@@ -54,15 +55,15 @@ def desired_waf(live, identifier):
             and rate[0].get("ruleType") == "RateLimitRule"
             and rate[0].get("rateLimitDurationInMinutes") == 1,
             "API rate-limit rule is missing, disabled or reordered")
-    methods = [normalized_rule(rule) for rule in rules if rule.get("name") != "RateLimitApi"]
+    methods = [normalized_rule(rule) for rule in rules if rule.get("name") not in {"RateLimitApi", MODEL_LIST_RATE_RULE}]
     legacy = [{"name": "BlockNonPost", "priority": 10, "enabledState": "Enabled",
                "ruleType": "MatchRule", "action": "Block", "matchConditions": [
                    {"matchVariable": "RequestMethod", "operator": "Equal",
                     "negateCondition": True, "matchValue": ["POST"]},
                ]}]
-    require(methods in (legacy, api_method_rules()), "API method rules differ from the reviewed baseline")
+    require(methods in (legacy, api_method_rules(model_list=False), api_method_rules()), "API method rules differ from the reviewed baseline")
     desired = {key: copy.deepcopy(properties[key]) for key in ("policySettings", "customRules", "managedRules")}
-    desired["customRules"]["rules"] = [*api_method_rules(), copy.deepcopy(rate[0])]
+    desired["customRules"]["rules"] = [*api_method_rules(), model_list_rate_rule(model_list_threshold), copy.deepcopy(rate[0])]
     resource = {"type": "Microsoft.Network/frontDoorWebApplicationFirewallPolicies",
                 "apiVersion": "2024-02-01", "name": identifier.rsplit("/", 1)[1],
                 "location": live["location"], "sku": {"name": sku["name"]}, "properties": desired}
@@ -107,7 +108,9 @@ def update(config_path, operation, approved, change_ticket, approvers):
     require(identifier.lower().startswith(prefix.lower()) and "/" not in identifier[len(prefix):]
             and identifier.lower() != edge["adminWafId"].lower(), "API WAF must be separate and in the target group")
     live = deployed_resource(azure, identifier, "2024-02-01")
-    desired = desired_waf(live, identifier)
+    from scripts.app_gateway import model_list_rate_limit
+    model_list_threshold = model_list_rate_limit(config["parameters"]["edge"])
+    desired = desired_waf(live, identifier, model_list_threshold)
     require(desired["properties"]["policySettings"]["mode"] == approval["wafMode"],
             "Live API WAF mode differs from the approved canary report")
     require(desired["properties"]["customRules"]["rules"][-1].get("rateLimitThreshold")
@@ -149,7 +152,7 @@ def update(config_path, operation, approved, change_ticket, approvers):
         require(result.get("properties", {}).get("provisioningState") == "Succeeded", "WSS WAF deployment failed")
         summary["deployed"] = True
         after = deployed_resource(azure, identifier, "2024-02-01")
-        observed = desired_waf(after, identifier)
+        observed = desired_waf(after, identifier, model_list_threshold)
         require(observed == desired
                 and [normalized_rule(rule) for rule in after["properties"]["customRules"]["rules"]]
                 == [normalized_rule(rule) for rule in desired["properties"]["customRules"]["rules"]],

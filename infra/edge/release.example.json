@@ -16,6 +16,7 @@
   "frontDoorId": "REPLACE_EXPECTED_FRONT_DOOR_ID",
   "rateLimitPerMinute": 600,
   "adminRateLimitPerMinute": 120,
+  "modelListRateLimitPerMinute": 120,
   "wafMode": "Detection",
   "changeTicket": "REPLACE_APPROVED_CHANGE_TICKET",
   "approvedBy": [],

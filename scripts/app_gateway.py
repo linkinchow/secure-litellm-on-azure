@@ -4,16 +4,17 @@ import ipaddress
 import re
 from uuid import UUID
 
+from scripts.api_protocol import MODEL_LIST_RATE_LIMIT
 from scripts.customer_migration import configured, fingerprint, require
 
 EDGE_TYPES = ("frontDoor", "applicationGateway")
 FRONT_DOOR_HEADER = "X-Azure-FDID"
 APP_GATEWAY_HEADER = "X-LLMGW-Edge-Id"
 APP_GATEWAY_REQUIRED = {"type", "adminAllowedCidrs", "logAnalyticsWorkspaceName", "subnetName", "subnetPrefix"}
-APP_GATEWAY_OPTIONAL = {"rateLimitPerMinute", "adminRateLimitPerMinute", "availabilityZones", "minCapacity", "maxCapacity", "requestTimeoutSeconds", "wafExcludePromptFields"}
+APP_GATEWAY_OPTIONAL = {"rateLimitPerMinute", "adminRateLimitPerMinute", "modelListRateLimitPerMinute", "availabilityZones", "minCapacity", "maxCapacity", "requestTimeoutSeconds", "wafExcludePromptFields"}
 APP_GATEWAY_ONLY = {"subnetName", "subnetPrefix", "availabilityZones", "minCapacity", "maxCapacity", "requestTimeoutSeconds", "wafExcludePromptFields"}
 FRONT_DOOR_ONLY = {"privateOrigin", "adminPrivateOrigin"}
-DEFAULTS = {"rateLimitPerMinute": 600, "adminRateLimitPerMinute": 120, "availabilityZones": ["1", "2", "3"], "minCapacity": 2, "maxCapacity": 10, "requestTimeoutSeconds": 900, "wafExcludePromptFields": False}
+DEFAULTS = {"rateLimitPerMinute": 600, "adminRateLimitPerMinute": 120, "modelListRateLimitPerMinute": MODEL_LIST_RATE_LIMIT, "availabilityZones": ["1", "2", "3"], "minCapacity": 2, "maxCapacity": 10, "requestTimeoutSeconds": 900, "wafExcludePromptFields": False}
 SSL_POLICY = "AppGwSslPolicy20220101S"
 # Public IP names with domainNameLabelScope carry a hash label and, in some regions, a sysgen label.
 FQDN_PATTERN = r"[a-z0-9-]+(?:\.[a-z0-9]+)?\.{location}(?:\.sysgen)?\.cloudapp\.azure\.com"
@@ -97,7 +98,15 @@ def app_gateway_settings(config):
     require(type(settings["requestTimeoutSeconds"]) is int and 60 <= settings["requestTimeoutSeconds"] <= 86400, "Application Gateway request timeout must be 60 to 86400 seconds")
     require(type(settings["wafExcludePromptFields"]) is bool, "wafExcludePromptFields must be a boolean")
     require(type(settings["rateLimitPerMinute"]) is int and 1 <= settings["rateLimitPerMinute"] <= 100000 and type(settings["adminRateLimitPerMinute"]) is int and 1 <= settings["adminRateLimitPerMinute"] <= 10000, "Invalid edge rate limits")
+    model_list_rate_limit(edge)
     return settings
+
+
+def model_list_rate_limit(edge):
+    """Per-client-IP model-discovery threshold for either edge type; templates allow 1 to 10000 per minute."""
+    value = (edge or {}).get("modelListRateLimitPerMinute", MODEL_LIST_RATE_LIMIT)
+    require(type(value) is int and 1 <= value <= 10000, "edge.modelListRateLimitPerMinute must be an integer from 1 to 10000")
+    return value
 
 
 def validate_edge_type(config):
@@ -108,6 +117,8 @@ def validate_edge_type(config):
     kind = edge_type(config)
     if kind == "frontDoor":
         require(not set(edge) & APP_GATEWAY_ONLY, "Application Gateway fields require edge.type=applicationGateway")
+        if configured(edge.get("modelListRateLimitPerMinute", MODEL_LIST_RATE_LIMIT)):
+            model_list_rate_limit(edge)
         return
     require(not set(edge) & FRONT_DOOR_ONLY, "Application Gateway edge cannot contain Front Door private origins")
     if configured(edge) and "privateIngress" in config:
@@ -123,7 +134,7 @@ def template_parameters(config):
     return {
         "adminAllowedCidrs": admin_source_cidrs(settings["adminAllowedCidrs"]),
         "logAnalyticsWorkspaceName": settings["logAnalyticsWorkspaceName"],
-        "rateLimitPerMinute": settings["rateLimitPerMinute"], "adminRateLimitPerMinute": settings["adminRateLimitPerMinute"],
+        "rateLimitPerMinute": settings["rateLimitPerMinute"], "adminRateLimitPerMinute": settings["adminRateLimitPerMinute"], "modelListRateLimitPerMinute": settings["modelListRateLimitPerMinute"],
         "virtualNetworkName": network["virtualNetworkName"], "subnetName": settings["subnetName"], "subnetPrefix": settings["subnetPrefix"],
         "availabilityZones": settings["availabilityZones"], "minCapacity": settings["minCapacity"], "maxCapacity": settings["maxCapacity"],
         "requestTimeoutSeconds": settings["requestTimeoutSeconds"], "wafExcludePromptFields": settings["wafExcludePromptFields"],

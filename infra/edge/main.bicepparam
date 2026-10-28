@@ -17,3 +17,4 @@ param logAnalyticsWorkspaceName = 'REPLACE_LOG_ANALYTICS_WORKSPACE'
 param wafMode = 'Detection'
 param rateLimitPerMinute = 600
 param adminRateLimitPerMinute = 120
+param modelListRateLimitPerMinute = 120

@@ -104,7 +104,7 @@ Windows 文件权限需按本机策略保护。退出码 0 仅表示完成且状
 核对 `ruleName`、`action`、`SocketIP`、HTTP 状态以及实时 Policy 模式：
 **Detection 只检测，不应声称规则在 Prevention 强制阻断。**
 2026-10-10只读查询发现参考环境 API 为 Detection、Admin 为 Prevention；这是当时状态，执行测试时必须重新核对。
-API 路径只开放固定推理 POST，`/v1/models` 和 API 域名的 `/ui/` 应被拒绝。
+API 路径只开放固定推理 POST 和模型列表 GET（`/models`、`/v1/models`）；`POST /v1/models`、`/v1/models/{id}` 和 API 域名的 `/ui/` 应被拒绝，无 Key 的 `GET /v1/models` 应得到 401/403。
 真实限速和容量/DDoS测试需另定窗口、上限、监控、停止条件及 Azure 支持安排；禁止用此脚本的少量结果作相应证明。
 
 ## Codex 缓存命中与会话亲和测试

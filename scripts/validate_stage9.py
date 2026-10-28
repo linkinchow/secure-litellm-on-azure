@@ -8,9 +8,18 @@ from pathlib import Path
 import yaml
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts.api_protocol import api_method_rules, app_gateway_api_method_rules
+from scripts.api_protocol import MODEL_LIST_PATHS, api_method_rules, app_gateway_api_method_rules, app_gateway_model_list_rate_rule, model_list_rate_rule
 
-API_PATHS = {"/chat/completions", "/v1/chat/completions", "/responses", "/v1/responses", "/embeddings", "/v1/embeddings"}
+INFERENCE_PATHS = {"/chat/completions", "/v1/chat/completions", "/responses", "/v1/responses", "/embeddings", "/v1/embeddings"}
+# Public edges also route GET model discovery; the legacy Entra proxy overlay keeps inference only.
+API_PATHS = INFERENCE_PATHS | set(MODEL_LIST_PATHS)
+MODEL_LIST_THRESHOLD = "[parameters('modelListRateLimitPerMinute')]"
+
+
+def model_list_parameter(template):
+    parameter = template["parameters"]["modelListRateLimitPerMinute"]
+    assert (parameter["type"], parameter["defaultValue"], parameter["minValue"], parameter["maxValue"]) == ("int", 120, 1, 10000)
+    assert template["outputs"]["edge"]["value"]["modelListRateLimitPerMinute"] == MODEL_LIST_THRESHOLD
 
 
 def resources(template):
@@ -78,7 +87,9 @@ def validate_templates(edge, origin):
         assert not waf["managedRules"].get("exclusions")
         assert all(rule["action"] != "Allow" for rule in waf["customRules"]["rules"])
     api_rules = wafs["api"]["properties"]["customRules"]["rules"]
-    assert [rule for rule in api_rules if rule["name"] != "RateLimitApi"] == api_method_rules()
+    assert api_rules[:-1] == [*api_method_rules(), model_list_rate_rule(MODEL_LIST_THRESHOLD)]
+    assert api_rules[-1]["name"] == "RateLimitApi" and api_rules[-1]["priority"] == 20 and api_rules[-1]["rateLimitThreshold"] == "[parameters('rateLimitPerMinute')]"
+    model_list_parameter(edge)
     admin_waf = wafs["admin"]["properties"]
     assert admin_waf["policySettings"]["mode"] == "Prevention"
     assert {rule["name"] for rule in admin_waf["customRules"]["rules"]} == {"BlockUnapprovedAdminSources", "BlockUnsafeMethods", "RateLimitAdmin"}
@@ -147,8 +158,10 @@ def validate_app_gateway_template(template):
     by_name = {item["name"]: item for item in managed}
     policies = {item["name"]: item["properties"] for item in managed if item["type"].endswith("FirewallPolicies")}
     api = policies["[variables('apiWafName')]"]
-    assert api["customRules"][:4] == app_gateway_api_method_rules()
-    assert api["customRules"][4]["ruleType"] == "RateLimitRule" and api["customRules"][4]["groupByUserSession"] == [{"groupByVariables": [{"variableName": "ClientAddr"}]}]
+    assert api["customRules"][:-1] == [*app_gateway_api_method_rules(), app_gateway_model_list_rate_rule(MODEL_LIST_THRESHOLD)]
+    rate = api["customRules"][-1]
+    assert rate["name"] == "RateLimitApi" and rate["priority"] == 20 and rate["ruleType"] == "RateLimitRule" and rate["groupByUserSession"] == [{"groupByVariables": [{"variableName": "ClientAddr"}]}]
+    model_list_parameter(template)
     admin = policies["[variables('adminWafName')]"]
     assert "'Prevention'" in admin["policySettings"]
     assert [rule["name"] for rule in admin["customRules"]] == ["BlockUnapprovedAdminSources", "BlockUnsafeMethods", "RateLimitAdmin"]
@@ -180,7 +193,7 @@ def validate_manifests(documents):
     assert api["rules"][0]["host"] == "llm-api.example.com"
     assert admin["rules"][0]["host"] == "llm-admin.example.com"
     paths = api["rules"][0]["http"]["paths"]
-    assert {item["path"] for item in paths} == API_PATHS | {"/readyz"}
+    assert {item["path"] for item in paths} == INFERENCE_PATHS | {"/readyz"}
     assert all(item["pathType"] == "Exact" and item["backend"]["service"]["name"] == "llm-api-proxy" for item in paths)
     for plane in ("api", "admin"):
         ingress = objects[("Ingress", f"llm-{plane}")]["spec"]

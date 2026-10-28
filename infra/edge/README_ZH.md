@@ -4,15 +4,27 @@
 
 当前West US 3 greenfield测试使用本模块的Front Door Premium双平面设计，API/Admin分别通过PLS进入隔离native ingress；原生Admin用户名/密码登录和virtual key的Codex Responses推理已有用户验证，不是Entra SSO。2026-10-09批准出口为三个精确公网IPv4 `/32`及一个IPv6 `/128`，不是仅IPv4策略；资源管理状态不替代未批准来源、错误密码、协议和回退的独立验收。
 
-`main.bicep`创建一个Front Door Premium profile，但API和Admin使用不同endpoint、自定义域、origin group、Private Link origin、route和WAF policy。API route仍只有6个精确推理路径；Admin route为完整UI路径，Admin WAF用`SocketAddr`匹配实际连接源，并阻断不在`adminAllowedCidrs`中的来源，内层继续执行Entra或LiteLLM原生登录。两条route均无缓存、禁用默认`azurefd.net`域路由且仅支持HTTPS。
+`main.bicep`创建一个Front Door Premium profile，但API和Admin使用不同endpoint、自定义域、origin group、Private Link origin、route和WAF policy。API route只有8个精确路径：6个推理路径及模型发现`/models`、`/v1/models`（见下文“模型列表路由”）；Admin route为完整UI路径，Admin WAF用`SocketAddr`匹配实际连接源，并阻断不在`adminAllowedCidrs`中的来源，内层继续执行Entra或LiteLLM原生登录。两条route均无缓存、禁用默认`azurefd.net`域路由且仅支持HTTPS。
 
 Admin域不启用客户端证书认证，不创建Front Door Secret或边缘CA信任Vault，也不依赖Preview API。外层IP白名单不是用户身份认证：共享NAT后的所有用户都能通过该门禁，仍必须使用内层登录、强密码、限流和源站FDID绑定。公网出口不稳定时应先选择可控企业代理/VPN出口或其他身份感知边缘方案，而不是放宽CIDR。
 
 ## Native Responses WebSocket
 
-native ingress保留六个POST推理路径，并仅对`/responses`和`/v1/responses`接受合法GET WebSocket Upgrade；两种协议都受同一Host、TLS和FDID门禁约束。Front Door原生支持WSS且route已禁用缓存，不需额外协议开关。API WAF以四条Block方法规则区分POST、合法Responses握手及其他GET，不用Allow短路managed rules/限流；Admin不变。LiteLLM固定1.104.0已含原生Responses WS和Azure上游路径，本次不更换后端镜像。
+native ingress保留六个POST推理路径，并仅对`/responses`和`/v1/responses`接受合法GET WebSocket Upgrade；两种协议都受同一Host、TLS和FDID门禁约束。Front Door原生支持WSS且route已禁用缓存，不需额外协议开关。API WAF以五条Block方法规则区分推理POST、模型列表GET、合法Responses握手及其他方法/GET，不用Allow短路managed rules/限流；WebSocket头检查只作用于Responses路径；Admin不变。LiteLLM固定1.104.0已含原生Responses WS和Azure上游路径，本次不更换后端镜像。
 
 首次部署按原Stage顺序自动取得该契约。已发布native dev/test canary按[WSS升级执行单](../../local_execution/native-wss-upgrade-zh.md)更新ingress、单资源API WAF及绑定/报告，**不要重跑禁流量edge-prepare**。WAF只检查握手、不检查后续帧，HTTP限流不是per-turn限流；真实两轮、工具回传、Key权限/预算及Spend Logs须独立验收。Entra代理不因本次变更自动支持WSS。
+
+## 模型列表路由
+
+Codex Desktop/CLI/VS Code启动和刷新时`GET /v1/models`（带`client_version`等查询串）做模型发现；缺少该路由时客户端不可用。API平面因此只额外开放`/models`和`/v1/models`两个精确路径，且只允许GET：
+
+| 层 | 控制 |
+| --- | --- |
+| Front Door route | `patternsToMatch`增加两个精确路径，无通配；`/v1/models/{id}`、`/model/info`等管理路径仍不路由 |
+| API WAF | 优先级11只放行Responses和模型列表的GET；优先级14 `BlockModelListNonGet`阻断两路径上的非GET；优先级15 `RateLimitModelList`按`SocketAddr`每分钟限流（`groupBy=SocketAddr`，RegEx匹配路径及可选查询串），先于全局`RateLimitApi`（20） |
+| Traefik | 仅`Method(GET) && Path(/models或/v1/models)`进入LiteLLM，其他方法和子路径返回404；同样要求Host与FDID |
+
+`modelListRateLimitPerMinute`缺省120，对应旧ingress的`limit-rps=2`；允许1–10000，可在`parameters.edge`中调整，按共享NAT后的Codex客户端数和刷新频率评估。Front Door以1分钟窗口计数，不是令牌桶：旧ingress的突发上限约6个请求，这里同一分钟内可一次用完120个；共享NAT出口的所有用户共用一个计数。Detection模式只记录不阻断。Entra代理overlay不开放该路由。
 
 ## 依赖顺序
 
@@ -31,7 +43,6 @@ PLS的`visibility=['*']`允许Front Door跨订阅发现，不代表数据访问�
 | --- | --- | --- |
 | `adminAllowedCidrs` | 允许访问Admin域的1–32个公网出口CIDR | 在管理员使用的实际公司网络/VPN/代理路径查询公网出口；必须显式CIDR，IPv4不得宽于`/24`、IPv6不得宽于`/64`，且必须全局可路由、无重复 |
 | `adminRateLimitPerMinute` | 单一源地址的Admin边缘每分钟限流阈值 | 依据管理员人数、企业NAT汇聚及UI实际请求基线确定；Admin WAF固定Prevention，过低会直接阻断共享出口用户 |
-
 Admin WAF固定包含三条自定义规则：优先级5的`BlockUnapprovedAdminSources`使用`SocketAddr`、`IPMatch`和`negateCondition=true`阻断白名单外来源；优先级10阻断TRACE/TRACK；优先级20执行一分钟限流。使用`SocketAddr`是为了不信任可伪造的`X-Forwarded-For`。部署及release会把实际CIDR、规则、模式和阈值绑定到回执并检查live漂移。
 
 固定IPv4出口按`<批准公网IPv4>/32`填写，固定IPv6出口按`<批准公网IPv6>/128`填写。当前路径使用精确地址，表中的`/24`及`/64`只是校验上限，不是建议扩大的网段。双栈浏览器可能使用IPv6，须在实际访问路径核验并分别批准；不能只查询IPv4后假定Admin可用。Laptop私网地址（如`10.x`、`172.16/12`或`192.168/16`）不会到达Front Door，不能作为白名单值。出口动态变化时，先确定稳定企业出口和更新流程，不得扩大到不受控网络。受控更新命令见[本地Stage2–9指南](../../local_execution/stage2-9-guide-zh.md)，不要手改WAF规则造成配置/回执漂移。

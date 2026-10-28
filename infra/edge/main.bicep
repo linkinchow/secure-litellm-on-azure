@@ -47,6 +47,11 @@ param rateLimitPerMinute int = 600
 @description('Admin per-client-IP rate threshold per minute after source-IP admission.')
 param adminRateLimitPerMinute int = 120
 
+@minValue(1)
+@maxValue(10000)
+@description('Per-client-IP threshold per minute for GET /models and /v1/models (Codex model discovery); 120 matches the legacy ingress 2 requests/second.')
+param modelListRateLimitPerMinute int = 120
+
 param tags object = {}
 
 var suffix = uniqueString(resourceGroup().id, environmentName)
@@ -224,7 +229,7 @@ resource waf 'Microsoft.Network/frontDoorWebApplicationFirewallPolicies@2024-02-
           action: 'Block'
           matchConditions: [
             { matchVariable: 'RequestMethod', operator: 'Equal', matchValue: ['GET'] }
-            { matchVariable: 'RequestUri', operator: 'RegEx', negateCondition: true, matchValue: ['^(https://[^/?#]+)?/(v1/)?responses(\\?.*)?$'] }
+            { matchVariable: 'RequestUri', operator: 'RegEx', negateCondition: true, matchValue: ['^(https://[^/?#]+)?/(v1/)?(responses|models)(\\?.*)?$'] }
           ]
         }
         {
@@ -235,6 +240,7 @@ resource waf 'Microsoft.Network/frontDoorWebApplicationFirewallPolicies@2024-02-
           action: 'Block'
           matchConditions: [
             { matchVariable: 'RequestMethod', operator: 'Equal', matchValue: ['GET'] }
+            { matchVariable: 'RequestUri', operator: 'RegEx', matchValue: ['^(https://[^/?#]+)?/(v1/)?responses(\\?.*)?$'] }
             { matchVariable: 'RequestHeader', selector: 'Upgrade', operator: 'Equal', negateCondition: true, matchValue: ['websocket'], transforms: ['Lowercase'] }
           ]
         }
@@ -246,8 +252,31 @@ resource waf 'Microsoft.Network/frontDoorWebApplicationFirewallPolicies@2024-02-
           action: 'Block'
           matchConditions: [
             { matchVariable: 'RequestMethod', operator: 'Equal', matchValue: ['GET'] }
+            { matchVariable: 'RequestUri', operator: 'RegEx', matchValue: ['^(https://[^/?#]+)?/(v1/)?responses(\\?.*)?$'] }
             { matchVariable: 'RequestHeader', selector: 'Connection', operator: 'RegEx', negateCondition: true, matchValue: ['(^|[, \\t])upgrade([, \\t]|$)'], transforms: ['Lowercase'] }
           ]
+        }
+        {
+          name: 'BlockModelListNonGet'
+          priority: 14
+          enabledState: 'Enabled'
+          ruleType: 'MatchRule'
+          action: 'Block'
+          matchConditions: [
+            { matchVariable: 'RequestMethod', operator: 'Equal', negateCondition: true, matchValue: ['GET'] }
+            { matchVariable: 'RequestUri', operator: 'RegEx', matchValue: ['^(https://[^/?#]+)?/(v1/)?models(\\?.*)?$'] }
+          ]
+        }
+        {
+          name: 'RateLimitModelList'
+          priority: 15
+          enabledState: 'Enabled'
+          ruleType: 'RateLimitRule'
+          rateLimitDurationInMinutes: 1
+          rateLimitThreshold: modelListRateLimitPerMinute
+          groupBy: [{ variableName: 'SocketAddr' }]
+          action: 'Block'
+          matchConditions: [{ matchVariable: 'RequestUri', operator: 'RegEx', matchValue: ['^(https://[^/?#]+)?/(v1/)?models(\\?.*)?$'] }]
         }
         {
           name: 'RateLimitApi'
@@ -369,6 +398,9 @@ resource route 'Microsoft.Cdn/profiles/afdEndpoints/routes@2025-04-15' = if (dep
       '/v1/responses'
       '/embeddings'
       '/v1/embeddings'
+      // Model discovery: the API WAF admits GET only and rate-limits it per client IP.
+      '/models'
+      '/v1/models'
     ]
     ruleSets: []
   }
@@ -419,5 +451,6 @@ output edge object = {
   adminPrivateOrigin: adminPrivateOrigin
   adminAllowedCidrs: adminAllowedCidrs
   adminRateLimitPerMinute: adminRateLimitPerMinute
+  modelListRateLimitPerMinute: modelListRateLimitPerMinute
   profileId: deployEdge ? profile!.properties.frontDoorId : ''
 }

@@ -195,7 +195,7 @@ class PrivateIngressContainerTests(unittest.TestCase):
                     with socket.create_connection(address, timeout=5) as connection, context.wrap_socket(connection, server_hostname=host) as secured:
                         lines = [f"{method} {path} HTTP/1.1", f"Host: {host}", "Content-Length: 0", *[f"{key}: {value}" for key, value in headers.items()], "Connection: close", "", ""]
                         secured.sendall("\r\n".join(lines).encode("ascii"))
-                        response = http.client.HTTPResponse(secured)
+                        response = http.client.HTTPResponse(secured, method=method)
                         response.begin()
                         return response.status, response.read().decode("ascii")
 
@@ -204,7 +204,13 @@ class PrivateIngressContainerTests(unittest.TestCase):
                 self.assertEqual(response("GET", "/v1/chat/completions", {"X-Azure-FDID": identifier})[0], 404)
                 self.assertEqual(response("POST", "/key/generate", {"X-Azure-FDID": identifier})[0], 404)
                 self.assertEqual(response("GET", "/readyz"), (200, f"GET /health/readiness host={host}"))
-                self.assertEqual(backend_requests, [("POST", "/v1/chat/completions", host, "https", host), ("GET", "/health/readiness", host, "https", host)])
+                # Model discovery: GET only, exact paths, query preserved.
+                self.assertEqual(response("GET", "/v1/models?client_version=0.165.0", {"X-Azure-FDID": identifier}), (200, f"GET /v1/models?client_version=0.165.0 host={host}"))
+                self.assertEqual(response("GET", "/models", {"X-Azure-FDID": identifier}), (200, f"GET /models host={host}"))
+                self.assertEqual(response("GET", "/v1/models")[0], 404)
+                for method, path in (("POST", "/v1/models"), ("POST", "/models"), ("HEAD", "/v1/models"), ("DELETE", "/v1/models"), ("GET", "/v1/models/coding"), ("GET", "/models/coding"), ("GET", "/v1/model/info")):
+                    self.assertEqual(response(method, path, {"X-Azure-FDID": identifier})[0], 404, (method, path))
+                self.assertEqual(backend_requests, [("POST", "/v1/chat/completions", host, "https", host), ("GET", "/health/readiness", host, "https", host), ("GET", "/v1/models?client_version=0.165.0", host, "https", host), ("GET", "/models", host, "https", host)])
                 handshake = {"Upgrade": "websocket", "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
                              "Sec-WebSocket-Version": "13", "Connection": "Upgrade", "X-Azure-FDID": identifier}
                 # The normal HTTP helper adds Connection: close, so use it only for rejection cases.
@@ -212,7 +218,7 @@ class PrivateIngressContainerTests(unittest.TestCase):
                     ("/v1/responses", {"X-Azure-FDID": identifier}),
                     ("/responses", {"X-Azure-FDID": identifier}),
                     ("/v1/chat/completions", handshake),
-                    ("/v1/models", handshake),
+                    ("/v1/models/coding", handshake),
                     ("/key/generate", handshake),
                     ("/v1/responses", {**handshake, "X-Azure-FDID": "22222222-2222-4222-8222-222222222222"}),
                     ("/v1/responses", {key: value for key, value in handshake.items() if key != "X-Azure-FDID"}),

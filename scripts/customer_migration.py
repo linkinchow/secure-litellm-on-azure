@@ -55,7 +55,7 @@ COMPONENTS = {
     "proxy-foundation": (7, "proxy-foundation", set()),
     "audit": (8, "audit-storage", {"storageAccountName", "virtualNetworkName", "privateEndpointSubnetName", "logAnalyticsWorkspaceName", "cmkVaultName", "cmkKeyName", "writerPrincipalId", "readerPrincipalId", "retentionPrincipalId", "recoveryPrincipalId"}),
     "origin": (9, "edge-origin", {"privateLinkServiceName", "adminPrivateLinkServiceName", "virtualNetworkName", "ingressSubnetName", "apiLoadBalancer", "adminLoadBalancer"}),
-    "edge": (9, "edge", {"type", "privateOrigin", "adminPrivateOrigin", "adminAllowedCidrs", "logAnalyticsWorkspaceName", "rateLimitPerMinute", "adminRateLimitPerMinute", "subnetName", "subnetPrefix", "availabilityZones", "minCapacity", "maxCapacity", "requestTimeoutSeconds", "wafExcludePromptFields"}),
+    "edge": (9, "edge", {"type", "privateOrigin", "adminPrivateOrigin", "adminAllowedCidrs", "logAnalyticsWorkspaceName", "rateLimitPerMinute", "adminRateLimitPerMinute", "modelListRateLimitPerMinute", "subnetName", "subnetPrefix", "availabilityZones", "minCapacity", "maxCapacity", "requestTimeoutSeconds", "wafExcludePromptFields"}),
 }
 REQUIRED = {
     "bootstrap": set(),

@@ -176,7 +176,7 @@ scripts/
 **改造项**：
 
 - 定义独立 API/Admin 域名；互联网模式分别绑定 Front Door、WAF、PLS 和内部 LB；
-- 数据面仅开放六条固定 Chat/Responses/Embeddings 路径（带 `/v1` 与不带 `/v1`），不开放 `/v1/models` 或通配 `/v1/*`；扩展协议须另行审批、配置与验收；
+- 数据面仅开放六条固定 Chat/Responses/Embeddings 路径（带 `/v1` 与不带 `/v1`），不开放通配 `/v1/*` 或 `/v1/models/{id}`；Codex 模型发现仅开放 `GET /models`、`GET /v1/models`，边缘 WAF 阻断其他方法并按客户端 IP 每分钟限流（`modelListRateLimitPerMinute`，缺省 120，对应旧 ingress 每秒 2 次）；扩展协议须另行审批、配置与验收；
 - 管理面承载 `/ui`、SSO callback、用户/Key/Team/模型/配置管理 API；
 - 公网数据面入口对管理路径明确返回 403；
 - 当前 Admin 边缘允许批准公网出口，私有回源后执行原生登录；生产企业增强另验批准设备和 Entra 管理员组；

@@ -28,7 +28,9 @@ class EdgeSecurityProbeTests(unittest.TestCase):
 
     def test_suite_is_bounded_and_negative_cases_never_use_real_key(self):
         cases = probe.cases("https://admin.example.invalid", "approved-model")
-        self.assertEqual(len(cases), 12)
+        self.assertEqual(len(cases), 14)
+        self.assertEqual({(item["method"], item["path"]) for item in cases if "/models" in item["path"]},
+                         {("POST", "/v1/models"), ("GET", "/v1/models"), ("GET", "/v1/models/security-probe-no-model")})
         self.assertEqual(sum(bool(item.get("realKey")) for item in cases), 1)
         self.assertTrue(all(not item.get("realKey") for item in cases if item["goal"] != "authorized-inference"))
         self.assertTrue(all(len(item["path"]) < 200 for item in cases))
@@ -151,9 +153,9 @@ class EdgeSecurityProbeTests(unittest.TestCase):
                     patch.object(probe.os.environ, "get") as environment:
                 self.assertEqual(probe.run(args), 0)
             environment.assert_not_called()
-            self.assertEqual(sleep.call_count, 8)
+            self.assertEqual(sleep.call_count, 10)
             self.assertTrue(all(call.args == (2,) for call in sleep.call_args_list))
-            self.assertEqual(json.loads(path.read_text())["requestCount"], 9)
+            self.assertEqual(json.loads(path.read_text())["requestCount"], 11)
 
 
 if __name__ == "__main__":

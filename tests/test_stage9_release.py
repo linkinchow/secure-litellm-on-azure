@@ -105,7 +105,9 @@ class Stage9ReleaseTests(unittest.TestCase):
     def test_production_requires_prevention_and_recent_distinct_approvals(self):
         config = evidence_config("production")
         validate_release(config)
-        for patch in ({"wafMode": "Detection"}, {"approvedBy": [config["approvedBy"][0]]}, {"frontDoorId": "REPLACE_ID"}):
+        validate_release({**config, "modelListRateLimitPerMinute": 60})
+        for patch in ({"wafMode": "Detection"}, {"approvedBy": [config["approvedBy"][0]]}, {"frontDoorId": "REPLACE_ID"},
+                      {"modelListRateLimitPerMinute": 0}, {"modelListRateLimitPerMinute": 10001}, {"modelListRateLimitPerMinute": "120"}):
             with self.assertRaises(ValueError):
                 validate_release({**config, **patch})
         config["checks"]["canary_slo"]["observedAt"] = "2000-01-01T00:00:00Z"
@@ -152,6 +154,7 @@ class Stage9ReleaseTests(unittest.TestCase):
                 self.assertEqual(parameters["enableApiTraffic"]["value"], phase != "prepare")
                 self.assertEqual(parameters["enableAdminTraffic"]["value"], phase != "prepare")
                 self.assertEqual(parameters["baseDomain"]["value"], "customer.test.invalid")
+                self.assertEqual(parameters["modelListRateLimitPerMinute"]["value"], 120)
                 self.assertFalse(json.loads((Path(directory) / "release-summary.json").read_text())["deploymentPerformed"])
 
     def test_preview_uses_only_what_if_and_keeps_payloads_ignored(self):

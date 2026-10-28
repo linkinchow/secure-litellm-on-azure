@@ -12,7 +12,7 @@
 
 2026-10-09只读 Azure 管理面核查的参考环境为 West US3 新建 dev/test，已部署独立 API/Admin Front Door Premium、PLS、内部 LB 与隔离私有入口，两侧 WAF 为 Prevention。Admin 以否定 `SocketAddr IPMatch` 阻断白名单外来源，包含三个 IPv4 `/32`、一个 IPv6 `/128` 精确批准出口；这不是信任客户端自报的转发 Header。当前默认原生 LiteLLM `1.104.0`，Traefik 直接转发到 LiteLLM；Entra 代理是延期企业模式，不是共享默认跳点。用户已验证原生 Admin 密码 fallback 登录及 vkey Codex Responses 推理，不是 Entra 用户 SSO、生产证书续期或全部阶段验收。证书 Vault 与私有后端 Secret Vault 分离；无 APIM 或 App Service 运行路径。
 
-两侧自定义域管理状态均为 Approved/Succeeded、ManagedCertificate/TLS12；两条 route 已 Enabled、HttpsOnly + HTTPS redirect，`linkToDefaultDomain=Disabled`。API 只开放 `/chat/completions`、`/v1/chat/completions`、`/responses`、`/v1/responses`、`/embeddings`、`/v1/embeddings`，没有 `/v1/models`。Admin route 为 `/*`，依然先做来源门禁再执行原生授权；边缘通配不等于匿名管理权限。这些状态证明部署配置，不证明全部长流、证书轮换、续期和旁路拒绝实测通过。
+两侧自定义域管理状态均为 Approved/Succeeded、ManagedCertificate/TLS12；两条 route 已 Enabled、HttpsOnly + HTTPS redirect，`linkToDefaultDomain=Disabled`。API 只开放 `/chat/completions`、`/v1/chat/completions`、`/responses`、`/v1/responses`、`/embeddings`、`/v1/embeddings`，没有 `/v1/models`（新版代码另开放仅 GET、按客户端 IP 限流的 `/models`、`/v1/models` 供 Codex 模型发现，重新部署 ingress/edge 后生效）。Admin route 为 `/*`，依然先做来源门禁再执行原生授权；边缘通配不等于匿名管理权限。这些状态证明部署配置，不证明全部长流、证书轮换、续期和旁路拒绝实测通过。
 
 需要准确区分：
 

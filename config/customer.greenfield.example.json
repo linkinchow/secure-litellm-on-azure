@@ -78,7 +78,8 @@
       "adminAllowedCidrs": ["REPLACE_ADMIN_ALLOWED_PUBLIC_CIDR"],
       "logAnalyticsWorkspaceName": "REPLACE_TARGET_LOG_WORKSPACE",
       "rateLimitPerMinute": 600,
-      "adminRateLimitPerMinute": 120
+      "adminRateLimitPerMinute": 120,
+      "modelListRateLimitPerMinute": 120
     }
   }
 }

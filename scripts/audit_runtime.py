@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from scripts.audit_window import WINDOW_NAME, assert_paused, execute_window, plan_window
 from scripts.backend_manifest import verify_runtime_image
-from scripts.customer_migration import fingerprint, private_write, require, stage_fingerprint
+from scripts.customer_migration import USER_POOL_SELECTOR, fingerprint, private_write, require, stage_fingerprint
 from scripts.migration_deploy import AzureCommands, deployment_name, group_id
 from scripts.migration_runtime import connect_cluster, run_command
 
@@ -117,7 +117,7 @@ def recovery_documents(identity, image, input_data, name, subnet, api_cidr):
         {"apiVersion": "batch/v1", "kind": "Job", "metadata": {**metadata(name), "labels": labels}, "spec": {
             "backoffLimit": 0, "activeDeadlineSeconds": 1800, "ttlSecondsAfterFinished": 86400,
             "template": {"metadata": {"labels": labels}, "spec": {
-                "restartPolicy": "Never", "serviceAccountName": "l3-recovery", "automountServiceAccountToken": False,
+                "restartPolicy": "Never", "serviceAccountName": "l3-recovery", "nodeSelector": dict(USER_POOL_SELECTOR), "automountServiceAccountToken": False,
                 "securityContext": {"runAsNonRoot": True, "runAsUser": 10001, "runAsGroup": 10001, "fsGroup": 10001, "seccompProfile": {"type": "RuntimeDefault"}},
                 "containers": [{"name": "recovery", "image": image, "command": ["node", "audit-recovery-worker.mjs"], "securityContext": security,
                                 "resources": {"requests": {"cpu": "100m", "memory": "128Mi"}, "limits": {"cpu": "1", "memory": "512Mi"}},

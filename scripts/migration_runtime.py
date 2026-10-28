@@ -14,7 +14,7 @@ from uuid import uuid4
 
 import yaml
 
-from scripts.customer_migration import ROOT, MigrationError, active_stages, configured, deployment_mode, fingerprint, private_write, require, stage_fingerprint, validate_config, validate_evidence
+from scripts.customer_migration import ROOT, USER_POOL_SELECTOR, MigrationError, active_stages, configured, deployment_mode, fingerprint, private_write, require, stage_fingerprint, validate_config, validate_evidence
 from scripts.migration_deploy import AzureCommands, deployment_name, group_id
 from scripts.migration_evidence import draft_report
 from scripts.workflow_diagnostics import command_failure_summary, diagnostic_exit
@@ -159,6 +159,7 @@ def check_application(documents, stage, config):
         require(pod.get("automountServiceAccountToken") is False, "Disable automatic Kubernetes API credentials")
         require(pod.get("securityContext", {}).get("runAsNonRoot") is True, "Non-root pod security is required")
         require(not any("hostPath" in volume for volume in pod.get("volumes", [])), "hostPath is forbidden")
+        require(all(pod.get("nodeSelector", {}).get(key) == value for key, value in USER_POOL_SELECTOR.items()), "Workloads must select the user node pool (nodeSelector workload=litellm)")
         if kind == "Deployment" and metadata["name"] == "llm-api-proxy":
             require(not any("csi" in volume or "secret" in volume for volume in pod.get("volumes", [])), "API admission must not mount internal credentials")
         for container in pod.get("containers", []) + pod.get("initContainers", []):

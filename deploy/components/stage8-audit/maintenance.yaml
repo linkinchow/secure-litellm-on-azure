@@ -28,6 +28,8 @@ spec:
         spec:
           restartPolicy: Never
           serviceAccountName: l3-retention
+          nodeSelector:
+            workload: litellm
           automountServiceAccountToken: false
           securityContext:
             runAsNonRoot: true

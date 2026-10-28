@@ -73,6 +73,23 @@
 
 Private AKS创建模板保留控制面Diagnostic Settings和Defender，但不在`addonProfiles`中直接启用Container Insights。参考环境曾出现workspace解析预检失败；后续独立DCR/DCRA接入仍是待完成项，必须在客户集群中验证实际数据流。
 
+### System池只运行系统组件（可选）
+
+`parameters.platform.stage4Aks.systemPoolCriticalAddonsOnly`默认`false`，已有环境不变。设为`true`时，模板给`systempool`加`CriticalAddonsOnly=true:NoSchedule`污点，只有带该容忍的AKS系统组件（CoreDNS、metrics-server、CSI、Azure Policy等）还能调度上去，System池因此可以用较小规格。limx按3台`Standard_D2s_v5` System池加3台`Standard_D4s_v5` User池部署，设为`true`。
+
+不论此选项取值，平台渲染的全部工作负载都带`nodeSelector: {workload: litellm}`，只调度到User池；模板固定给`userpool`打这个标签。范围包括LiteLLM后端、API/Admin auth-proxy、两套私网Traefik、OTel采集器、L3审计StatefulSet、`l3-retention` CronJob和`l3-recovery` Job。Stage6–8发布前的清单检查会拒绝缺少该选择器的Deployment和CronJob。User池须容纳全部应用Pod，包括滚动发布的maxSurge和HPA上限，按此规划User池规格和autoscaler上限（当前`maxCount`为6）。
+
+升级到含此改动的版本后，各工作负载首次重新发布时Pod模板变化会触发一次滚动更新，原在System池上的应用Pod随之迁到User池。Stage9 edge binding回执记录了proxy的Pod模板指纹，重新发布proxy后按既有流程重新执行edge binding。非ZRS的L3 spool磁盘固定在某个可用区，User池须在该区有节点。
+
+已有集群把选项改为`true`时，Stage4 platform部署会就地更新System池污点。`NoSchedule`不驱逐已在运行的Pod，只是之后不再把应用Pod调度到System池，已在上面的Pod要靠排空才会迁走。须在审批的维护窗口内按以下顺序执行：
+
+1. 先用新版本重新发布全部应用工作负载，用`kubectl get pods -A -o wide`对照节点确认应用Pod都已在User池运行，且User池容量充足；
+2. 运行Stage4 platform plan，确认What-if对AKS只显示System池`nodeTaints`变化，再部署；
+3. 逐台`kubectl cordon`、`kubectl drain --ignore-daemonsets --delete-emptydir-data`System节点，等被驱逐的Pod在其他节点就绪后`kubectl uncordon`，再处理下一台；drain受PDB约束，不要用`--disable-eviction`绕过；
+4. 检查没有Pending的Pod；客户自行安装、只能运行在System池的组件须自带`CriticalAddonsOnly`容忍。
+
+改回`false`后重新部署，再用`az aks nodepool show --name systempool --query nodeTaints`确认污点已清除；如仍存在，在维护窗口内执行`az aks nodepool update --name systempool --node-taints ""`。
+
 真实Azure OpenAI资源ID、订阅和资源组不会进入提交的参数文件，必须在受保护的What-if/部署变量中注入。
 
 启用`deployStage4=true`前必须确认：

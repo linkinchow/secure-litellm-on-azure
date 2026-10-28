@@ -239,6 +239,7 @@ def platform_maintenance(config):
     aks, data = platform.get("stage4Aks", {}), platform.get("stage5Data", {})
     require(aks.get("upgradeChannel", "patch") in {"none", "patch", "stable", "rapid", "node-image"}, "stage4Aks.upgradeChannel must be none, patch, stable, rapid or node-image")
     require(aks.get("nodeOSUpgradeChannel", "NodeImage") in {"None", "Unmanaged", "NodeImage", "SecurityPatch"}, "stage4Aks.nodeOSUpgradeChannel must be None, Unmanaged, NodeImage or SecurityPatch")
+    require(type(aks.get("systemPoolCriticalAddonsOnly", False)) is bool, "stage4Aks.systemPoolCriticalAddonsOnly must be true or false")
     require(data.get("redisHighAvailability", "Enabled") in {"Enabled", "Disabled"}, "stage5Data.redisHighAvailability must be Enabled or Disabled")
     for connection in platform.get("azureOpenAIConnections", []):
         require(connection.get("privateEndpoint", True) in {True, False}, "azureOpenAIConnections privateEndpoint must be true or false")
@@ -246,6 +247,16 @@ def platform_maintenance(config):
             # The Firewall allowlist and DNS fallback are derived from the default account host.
             require(connection.get("endpoint", "https://" + connection["accountName"] + ".openai.azure.com").rstrip("/") == "https://" + connection["accountName"] + ".openai.azure.com",
                     "A model connection without a private endpoint must use the default https://<account>.openai.azure.com endpoint")
+
+
+# The private-aks module labels the user pool workload=litellm; every platform pod template selects it so
+# nothing this repo deploys lands on the system pool, which may be tainted CriticalAddonsOnly.
+USER_POOL_SELECTOR = {"workload": "litellm"}
+
+
+def on_user_pool(pod):
+    pod["nodeSelector"] = {**pod.get("nodeSelector", {}), **USER_POOL_SELECTOR}
+    return pod
 
 
 def spread_across_zones(pod, zones, selector=None):

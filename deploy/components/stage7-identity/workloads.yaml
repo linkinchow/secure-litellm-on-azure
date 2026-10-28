@@ -38,6 +38,8 @@ spec:
         azure.workload.identity/use: "true"
     spec:
       serviceAccountName: llm-api-proxy
+      nodeSelector:
+        workload: litellm
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 600
       securityContext:

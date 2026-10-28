@@ -62,6 +62,8 @@ def validate(path: Path) -> None:
         fail(f"{path}: expected {expected_replicas} replicas")
     if not pod_spec.get("topologySpreadConstraints"):
         fail(f"{path}: topology spread is required")
+    if pod_spec.get("nodeSelector") != {"workload": "litellm"}:
+        fail(f"{path}: Pod must select the user node pool (workload=litellm)")
 
     services = [item for item in documents if item.get("kind") == "Service"]
     if not services or any(item.get("spec", {}).get("type", "ClusterIP") != "ClusterIP" for item in services):

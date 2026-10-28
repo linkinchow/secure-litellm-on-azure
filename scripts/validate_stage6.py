@@ -82,6 +82,7 @@ def validate_rendered(path: Path) -> None:
     }
     assert pod_spec["terminationGracePeriodSeconds"] >= 600
     assert pod_spec["topologySpreadConstraints"][0]["whenUnsatisfiable"] == "DoNotSchedule"
+    assert pod_spec["nodeSelector"] == {"workload": "litellm"}, "backend must stay on the user node pool"
     assert f"@{APPROVED_DIGEST}" in container["image"]
     assert container["lifecycle"]["preStop"]["exec"]["command"][-1] == "sleep 30"
     assert all(name in container for name in ("startupProbe", "readinessProbe", "livenessProbe"))

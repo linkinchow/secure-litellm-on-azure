@@ -192,6 +192,8 @@ def validate_manifests(documents):
         assert policy["ingress"][0]["from"] == [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": f"llm-{plane}-ingress"}}, "podSelector": {"matchLabels": {"app.kubernetes.io/component": "controller"}}}]
     assert objects[("NetworkPolicy", "allow-litellm-required-traffic")]["spec"]["ingress"] == [{"from": [{"podSelector": {"matchLabels": {"app.kubernetes.io/name": "entra-auth-proxy"}}}], "ports": [{"protocol": "TCP", "port": 4000}]}]
     assert all(item["spec"]["type"] == "ClusterIP" for item in documents if item["kind"] == "Service")
+    pods = [item["spec"]["template"]["spec"] for item in documents if item["kind"] == "Deployment"] + [item["spec"]["jobTemplate"]["spec"]["template"]["spec"] for item in documents if item["kind"] == "CronJob"]
+    assert pods and all(pod.get("nodeSelector") == {"workload": "litellm"} for pod in pods)
     settings = next(item["data"]["config.json"] for item in documents if item["kind"] == "ConfigMap" and "config.json" in item.get("data", {}))
     assert json.loads(settings)["l3"]["enabled"] is False
 

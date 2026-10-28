@@ -662,7 +662,7 @@ class LocalExecutionTests(unittest.TestCase):
         for dependency in ("-r ../requirements.txt", "acme==5.8.0", "dnspython==2.8.0", "josepy==2.2.0"):
             self.assertIn(dependency, requirements)
         self.assertIn("local_execution/requirements.txt", guide)
-        for value in ("BACKEND_IMAGE_SUMMARY", "BACKEND_IMAGE_PREFIX", "BACKEND_DIGEST", ".signatureVerified == true", "CURRENT_REVISION=\"$(git rev-parse HEAD)\"", "${BACKEND_IMAGE##*@sha256:}", "REPLACE_BUILT_64_HEX_DIGEST"):
+        for value in ("BACKEND_IMAGE_SUMMARY", "BACKEND_IMAGE_PREFIX", "BACKEND_DIGEST", ".signatureVerified == true", "CURRENT_REVISION=\"$(git rev-parse HEAD)\"", "CURRENT_RUNTIME_REVISION=\"$(.venv/bin/python -m scripts.runtime_revision --runtime azure)\"", ".runtimeRevision == $runtime_revision", "(.runtimeRevision == null and .revision == $revision)", "${BACKEND_IMAGE##*@sha256:}", "REPLACE_BUILT_64_HEX_DIGEST"):
             self.assertIn(value, later_guide)
         for value in ("--option native-auth", "仅新增`litellm-ui-password=generate`", "Master Key继续不向任何人工用户", "--resolve \"llm-api.${BASE_DOMAIN}:443:${API_PRIVATE_IP}\"", "native_virtual_key_acl", "私有Admin LB仅作Front Door回源"):
             self.assertIn(value, later_guide)

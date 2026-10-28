@@ -347,7 +347,7 @@ AZURE_DATABASE_URL_TEMPLATE是后续应用清单生成器应从部署输出生�
 
 运行Promote LiteLLM image，选择目标environment（dev/test/prod）、build_azure_runtime=true及独立target_tag，例如litellm-azure:release-1。此模式使用固定Dockerfile，source_image不改变其基础镜像；构建、推送后扫描、生成SBOM和签名，扫描失败不签名。环境、目标ACR及签名环境标记必须一致；默认仍为prod。推送成功不等于镜像获准发布。
 
-随后运行Stage6 application。生成器校验schema-migrate/backend-secrets回执的SHA、Stage5配置、库和Vault，自动读取后台Client ID、Principal ID、数据库FQDN、Redis地址和PE子网。镜像签名须来自当前仓库默认分支的promote workflow，且带llmgw.runtime=azure、当前llmgw.revision和llmgw.environment。runner需Cosign、ACR读取权限和批准的Sigstore出站；临时DOCKER_CONFIG验证后清理。
+随后运行Stage6 application。生成器校验schema-migrate/backend-secrets回执的SHA、Stage5配置、库和Vault，自动读取后台Client ID、Principal ID、数据库FQDN、Redis地址和PE子网。镜像签名须来自当前仓库默认分支的promote workflow，且带llmgw.runtime=azure、llmgw.environment及与当前commit重新计算值相同的llmgw.runtimeRevision（后端运行时修订，只由`LiteLLM/runtime/**`、`scripts/source_supply_chain.py`和`scripts/schema_runtime.py`的Git内容决定；llmgw.revision只记录构建commit）。两份Stage5回执同样按运行时修订和Stage5配置哈希判断，文档、IaC或其他阶段代码的commit不要求重建镜像或重跑Stage5。此前签名、没有runtimeRevision的镜像及旧回执仍只在llmgw.revision等于当前commit时被接受。runner需Cosign、ACR读取权限和批准的Sigstore出站；临时DOCKER_CONFIG验证后清理。
 
 自动生成无DDL应用配置、模型映射、双副本Deployment、PDB/HPA、ServiceAccount、固定版本CSI、默认拒绝与仅API/admin代理可进入的网络策略。无密码数据库URL由代码生成，不引用旧DATABASE_URL Secret。生成结果仍经过服务端dry-run、计划批准、apply及rollout，不能因为自动生成而省略门禁。
 
@@ -363,7 +363,7 @@ AZURE_DATABASE_URL_TEMPLATE是后续应用清单生成器应从部署输出生�
 
 处理：应用镜像内置[callbacks.py](../LiteLLM/runtime/callbacks.py)，Stage6生成的config.yaml固定包含`litellm_settings.callbacks: [LiteLLM.runtime.callbacks.codex_passthrough]`，所有部署都启用。回调只在Responses创建/compact请求选定部署后，从每条input删除该字段；在副本上修改，不改调用方对象；不记录、存储或外发正文；无该字段或非Responses调用时不做修改。Codex本地保留自己的副本，功能不受影响。它不是正文采集回调，原生Spend Logs发布只放行这一已审查回调。runtimeSettings不能增删回调；公共镜像的Kustomize静态基线不含此模块，也不注册它。
 
-边界：Azure Responses WebSocket由LiteLLM原生逐帧转发，帧不经过该hook，未覆盖；如WebSocket出现同样400，客户端先使用HTTP Responses（`supports_websockets = false`）。镜像源码检查会在构建出的镜像内按代理相同方式加载并执行该回调；上线仍需新revision镜像签名、重新发布Stage6，并用真实Codex请求验证。
+边界：Azure Responses WebSocket由LiteLLM原生逐帧转发，帧不经过该hook，未覆盖；如WebSocket出现同样400，客户端先使用HTTP Responses（`supports_websockets = false`）。镜像源码检查会在构建出的镜像内按代理相同方式加载并执行该回调；回调位于`LiteLLM/runtime`，改动会改变后端运行时修订；上线仍需重新构建签名镜像、刷新Stage5回执、重新发布Stage6，并用真实Codex请求验证。
 
 ### Stage7代理身份基础设施
 
@@ -399,7 +399,7 @@ proxy-foundation从平台配置及databaseAccess派生参数，创建API/admin�
 2. **entra-apps**：使用AZURE_ENTRA_CLIENT_ID，通过Graph创建本方案专用、单租户API/admin应用及要求角色分配的service principal。固定作用域llm.invoke、应用角色Llm.Invoke、用户角色Llm.User和管理角色，自动配置admin回调域名。前版API应用仅缺少Llm.User且其他配置完全一致时，可经计划批准追加此角色；其他权限/Owner/回调漂移仍拒绝覆盖。完成后执行下述entra-access，再继续凭据与发布步骤。
 3. **admin-credentials**：同一Entra初始化身份在Graph生成admin应用密码，并立即写入私有admin Vault；另生成32字节会话加密密钥。默认有效期90天，可设置30-180天；已有值不轮换，剩余不足7天阻断初始化和发布。原值不进入artifact，回执只含Secret版本、应用ID及到期时间。
 4. **proxy-credentials**：切回AZURE_RUNTIME_CLIENT_ID，验证目标后台Deployment镜像/就绪状态与Service选择器，通过只监听127.0.0.1的kubectl port-forward调用用户/Key API。Master Key从Stage5回执绑定的后台Vault版本读取，只用于bootstrap，不复制进代理Vault或Pod。仅为启用的proxy_admin/proxy_admin_viewer创建管理用户及独立Key，精确限制管理角色、模型及路由；API准入主体和audit_reader均不获得该流程生成的Key。API客户端vkey通过LiteLLM原生受控管理流程签发和轮换，不复用旧代理Key，不由本动作代发。
-5. **构建代理镜像**：Promote LiteLLM image选择build_auth_proxy=true、build_azure_runtime=false及独立target_tag。使用现有固定Node基础镜像和npm锁文件，扫描/SBOM后签名，标记llmgw.runtime=auth-proxy、当前代码及环境；两个构建选项互斥。普通导入镜像没有此标记，自动Stage7发布不会接受。
+5. **构建代理镜像**：Promote LiteLLM image选择build_auth_proxy=true、build_azure_runtime=false及独立target_tag。使用现有固定Node基础镜像和npm锁文件，扫描/SBOM后签名，标记llmgw.runtime=auth-proxy、构建commit、代理运行时修订（llmgw.runtimeRevision，只由`auth-proxy/`的Dockerfile、.dockerignore、npm清单/锁文件、native-ui-routes.json和顶层*.mjs决定）及环境；Stage7/8只比较运行时修订，其他代码变化无需重建代理镜像。两个构建选项互斥。普通导入镜像没有此标记，自动Stage7发布不会接受。
 6. **application / Stage7**：读取entra-apps、entra-access、admin-credentials、proxy-credentials回执和proxy-foundation输出，验证SHA/配置/应用/Vault/凭据版本与镜像签名，生成后台与API/admin工作负载、策略、CSI、PDB和网络策略。使用已验证的文件路由私有入口，不额外创建Ingress；仅管理代理挂载本平面版本固定的秘密，API代理不挂载内部Key；不同步成Kubernetes Secret。仍执行服务端dry-run、计划比较、apply及三个Deployment rollout。
 
 若步骤5得到新的proxy.image，先更新配置再对步骤2-4重新plan/execute确认；同值重跑不会重建Key或应用，但新配置需要新回执。也可先完成镜像构建再初始化，减少重复确认。后台与代理镜像分别构建，不能用同一digest代替。

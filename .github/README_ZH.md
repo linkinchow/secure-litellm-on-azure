@@ -50,7 +50,7 @@ CI不登录Azure，不部署资源。
 3. 解析目标不可变digest；
 4. 生成SPDX JSON SBOM；
 5. 使用Trivy阻断未修复Critical漏洞；
-6. 使用GitHub OIDC/Cosign签名digest；
+6. 使用GitHub OIDC/Cosign签名digest；构建镜像时附加构建commit（`llmgw.revision`）和运行时修订（`llmgw.runtimeRevision`，由`python -m scripts.runtime_revision --require-clean`对镜像输入文件的Git内容计算），部署只校验后者，因此无关commit不触发重建；
 7. 上传30天SBOM证据；
 8. 不直接部署Kubernetes，overlay变更必须走Pull Request。
 

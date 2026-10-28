@@ -77,9 +77,9 @@ Admin允许来源与不允许来源需要两台/两种获批出口分别执行�
 - 从实际Stage9部署输出定位Front Door，再从**实际securityPolicies关联**定位两份WAF；
   核对域名关联，不仅检查“有一个WAF资源”。
 - WAF启用、API实际Detection/Prevention模式，Admin必须Prevention；不自动切模式。
-- 四条API方法/握手规则的匹配条件与仓库契约一致；Admin使用SocketAddr来源门禁、
+- 五条API方法/握手规则（含模型列表非GET阻断`BlockModelListNonGet`）的匹配条件与仓库契约一致；Admin使用SocketAddr来源门禁、
   TRACE/TRACK规则；自定义Allow旁路、托管规则排除/覆盖会使基线检查失败，需单独审核。
-- 两个rate rule阈值与CFG一致。这里只是配置证据，**不是实际限流通过**。
+- 三个rate rule（`RateLimitApi`、`RateLimitAdmin`及`/models`、`/v1/models`的`RateLimitModelList`）阈值与CFG一致。这里只是配置证据，**不是实际限流通过**。
 - 请求体检查和日志scrubbing开关、指定LAW的WAF诊断启用；scrubbing开关不是完整脱敏证明。
 - 两条route的HTTPS、默认域名链接关闭；边缘托管TLS1.2配置、源站名称验证及PLS目标一致。
   Private Link状态返回Approved才计pass，ARM省略/null时标记unverified，
@@ -132,6 +132,7 @@ API管理路径拒绝、无效Key拒绝需要保留，但不能据此声称SQLi/
 | GET Chat | `BlockNonResponsesGet` |
 | GET Responses但无Upgrade | `BlockInvalidWebSocketUpgrade` |
 | GET Responses有Upgrade但Connection=close | `BlockInvalidWebSocketConnection` |
+| POST `/v1/models` | `BlockModelListNonGet` |
 | POST Responses携带合成XSS query | DefaultRuleSet的XSS类别；不能用Bot规则命中代替 |
 | POST Responses携带合成SQLi query | DefaultRuleSet的SQLI类别；不能用通用403代替 |
 | POST `/user/info` | API管理查询路径拒绝观察；不发送有效凭据，不调用创建/删除接口 |

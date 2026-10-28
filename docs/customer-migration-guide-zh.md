@@ -1475,7 +1475,7 @@ restore-target只恢复到Stage5输出绑定的**空目标库**，不使用手�
 }
 ```
 
-`connectionAlias`必须匹配platform.azureOpenAIConnections中的alias，deploymentName是该账号实际部署名，不是模型展示名。**客户端**API base使用`https://<api-domain>/v1`，请求`model`使用LiteLLM `model_name`别名（此处`modelGroup`，例如`coding`），不要使用deploymentName。API只开放固定Responses/Chat/Embedding推理路径，不开放`/v1/models`；客户端模型发现被拒绝不等于推理失败。不要填写MIGRATION_MANIFEST_YAML；schema/后台密钥/无密码数据库连接与CSI从前序回执生成。
+`connectionAlias`必须匹配platform.azureOpenAIConnections中的alias，deploymentName是该账号实际部署名，不是模型展示名。**客户端**API base使用`https://<api-domain>/v1`，请求`model`使用LiteLLM `model_name`别名（此处`modelGroup`，例如`coding`），不要使用deploymentName。API只开放固定Responses/Chat/Embedding推理路径及Codex模型发现`GET /models`、`GET /v1/models`（仅GET，不含`/v1/models/{id}`，边缘按客户端IP每分钟`modelListRateLimitPerMinute`次，缺省120）。不要填写MIGRATION_MANIFEST_YAML；schema/后台密钥/无密码数据库连接与CSI从前序回执生成。
 
 | 步骤 | workflow显示名称 | stage | component或action | operation | approved_run_id | confirm_environment |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -1590,7 +1590,7 @@ origin为API和Admin各创建一条Private Link Service并绑定不同内部LB f
 
 | 字段 | 来源与含义 |
 | --- | --- |
-| environmentName、baseDomain、logAnalyticsWorkspaceName、rateLimitPerMinute、adminRateLimitPerMinute | 与客户配置保持一致 |
+| environmentName、baseDomain、logAnalyticsWorkspaceName、rateLimitPerMinute、adminRateLimitPerMinute、modelListRateLimitPerMinute | 与客户配置保持一致 |
 | phase、wafMode | prepare/Detection保持禁用；canary/Detection启流量；production/Prevention正式发布。native Responses WSS方法契约随首次Stage4/9部署接入；已发布dev/test升级及真实协议验收见[WSS执行单](../local_execution/native-wss-upgrade-zh.md)，不重跑禁流量prepare |
 | privateOrigin、adminPrivateOrigin | origin实际两条PLS ID和区域，不保留auto或REPLACE，且ID不得相同 |
 | adminAllowedCidrs | 与edge配置完全一致的批准公网出口CIDR数组；必须是实际客户端路径的全局可路由地址，不是内网地址 |

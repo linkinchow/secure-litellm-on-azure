@@ -11,12 +11,14 @@ Stage4 `stage4-private-ingress`、Stage9 `stage9-edge-prepare`/`stage9-edge-bind
 仍按[Stage2–9 指南](stage2-9-guide-zh.md)的首次部署顺序执行，不需要额外 Portal 配置或自定义 WebSocket 代理。
 
 - POST 保留六个固定推理路径。
-- GET 仅允许 `/responses` 和 `/v1/responses` 的 WebSocket Upgrade。
+- GET `/models`、`/v1/models` 是普通 HTTP 模型列表（Codex 模型发现），不受下面 WebSocket 头检查约束，边缘按客户端 IP 限流。
+- 其余 GET 仅允许 `/responses` 和 `/v1/responses` 的 WebSocket Upgrade。
   `Upgrade: websocket` 和包含独立 `upgrade` token 的 `Connection` 必须存在；路径精确匹配。
   同一 Host/FDID 门禁覆盖 POST 和 WebSocket 两个分支。
 - Front Door route 仍仅支持 HTTPS、没有缓存；WSS 使用同一 TLS 443 入口。
   Traefik 原生透传 Upgrade，不注入伪造的 Upgrade/Connection。
-- API WAF 使用四条 **Block** 方法规则代替 `BlockNonPost`，不使用短路后续检查的 Allow 规则。
+- API WAF 使用五条 **Block** 方法规则代替 `BlockNonPost`（第五条阻断模型列表的非 GET），并增加模型列表限流 `RateLimitModelList`，不使用短路后续检查的 Allow 规则。
+  专用 API WAF 工具也接受只有四条 WSS 规则的旧基线，并一次升级为当前规则。
   现有 managed rules、API 限流及 Admin WAF 不因此取消。
   RequestUri 正则兼容路径形式及带 HTTPS authority 的完整 URI，路径部分仍精确锚定；
   不用只匹配 URI 后缀的方法，以免把其他路径的 query 误当作 Responses。
@@ -154,7 +156,7 @@ API WAF 为 Detection 时，规则匹配仍只是检测记录；不能据此称�
   --output-json "/tmp/responses-wss-$(date -u +%Y%m%dT%H%M%SZ).json"
 ```
 
-`--model` 是 LiteLLM 别名，不是 Azure deployment；公网 `/v1/models` 仍未开放。
+`--model` 是 LiteLLM 别名，不是 Azure deployment；可用同一 Key 调 `GET /v1/models` 查看它可用的别名。
 不要将示例 `coding` 当作环境中必然存在的别名。在 Runner 上可用
 `jq -r '.application.models[] | [.modelGroup, .deploymentName] | @tsv' "$CFG"`
 核对本地映射：第一列是客户端别名，第二列是 Azure deployment。以实际已加载配置和
@@ -211,7 +213,7 @@ continuation、工具回传失败，应处理实际模型/上游兼容性，不�
 
 若私有日志抛出 `ProxyModelNotFoundError`，提示 `Invalid model name passed in model=...`，
 说明本次请求没有找到可用模型路由，尚未进入 Azure 上游生成。先核对请求别名与实际
-已加载模型、团队映射和 Key 权限；不重跑 edge，不为自动发现开放公网 `/v1/models`。
+已加载模型、团队映射和 Key 权限；不重跑 edge；`GET /v1/models` 只列出 Key 可见别名，不改变模型权限。
 
 未知错误字段映射为 `unrecognized`，不保存后端 message、正文、ID 或 Key。
 旧版报告只有 `failureType=ProbeError` 时无法区分上述情况；更新验收脚本后，

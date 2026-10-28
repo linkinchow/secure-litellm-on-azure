@@ -1241,7 +1241,7 @@ az cognitiveservices account deployment list \
   --approved-plan-sha256 "REPLACE_STAGE4_PRIVATE_INGRESS_PLAN_SHA256"
 ```
 
-新计划必须把两套Traefik上游改为`litellm.litellm.svc.cluster.local:4000`；API只允许六个固定POST推理路径（`/responses`、`/chat/completions`、`/embeddings`及其`/v1`形式）和私有健康检查`GET /readyz`，**不允许`/v1/models`**；admin保留私网UI。此时后端尚未发布，execute只验证TLS、双平面Host隔离、私有LB和源地址策略，并记录`backendRoutesVerified=false`。不得手工删除代理、改NetworkPolicy或复用旧Stage4哈希。Entra路径无需在此重复Stage4。
+新计划必须把两套Traefik上游改为`litellm.litellm.svc.cluster.local:4000`；API只允许六个固定POST推理路径（`/responses`、`/chat/completions`、`/embeddings`及其`/v1`形式）、Codex模型发现`GET /models`与`GET /v1/models`（仅GET、精确路径，不含`/v1/models/{id}`）和私有健康检查`GET /readyz`；admin保留私网UI。此时后端尚未发布，execute只验证TLS、双平面Host隔离、私有LB和源地址策略，并记录`backendRoutesVerified=false`。不得手工删除代理、改NetworkPolicy或复用旧Stage4哈希。Entra路径无需在此重复Stage4。
 
 3. 计划并发布后端：
 
@@ -1274,7 +1274,7 @@ rm -f "$VERIFY_KUBECONFIG"
 
 通过条件：Ready副本等于Desired且至少2个；镜像是批准digest；Pod重建后会话/Redis行为正常；应用身份只能DML不能DDL；新版没有连接旧PG。
 
-5. native路径从批准私网浏览`https://llm-admin.<baseDomain>/fallback/login`，使用Stage6配置的用户名和客户密码库中的独立UI密码登录。登录后创建限定模型、预算和有效期的virtual key；API调用只使用该virtual key。客户端API base为`https://<api-domain>/v1`，请求`model`必须使用LiteLLM `model_name`别名（本配置的`modelGroup`），不是Azure deployment name；下例`coding`须替换成客户实际批准别名。Codex使用固定Responses路径，不能依赖被拒绝的`/v1/models`自动发现：
+5. native路径从批准私网浏览`https://llm-admin.<baseDomain>/fallback/login`，使用Stage6配置的用户名和客户密码库中的独立UI密码登录。登录后创建限定模型、预算和有效期的virtual key；API调用只使用该virtual key。客户端API base为`https://<api-domain>/v1`，请求`model`必须使用LiteLLM `model_name`别名（本配置的`modelGroup`），不是Azure deployment name；下例`coding`须替换成客户实际批准别名。Codex启动/刷新时用`GET /v1/models`做模型发现（只列出该Key可用别名；边缘按客户端IP限流，缺省每分钟120次），推理使用固定Responses路径：
 
 ```bash
 BASE_DOMAIN="$(jq -er '.baseDomain' local_execution/customer.json)"
@@ -1778,7 +1778,7 @@ deploy身份启用获批的canary phase：
   --approved-plan-sha256 "REPLACE_STAGE9_DNS_PUBLISH_PLAN_SHA256"
 ```
 
-Azure DNS动作在同一检查点中新增或更新`llm-api`和`llm-admin`两条CNAME，分别指向独立endpoint；中途失败可从已知状态继续，第三方漂移会阻止操作。第三方DNS由客户DNS管理员人工新增等效双记录，不选择`--option azure-dns`，也不运行`stage9-dns-publish`。新记录与旧系统域名并存，不是替换旧入口。新域名可解析后立即验证错误率/延迟、PG连接、Redis、预算和Spend Logs。API需确认缺Key、管理路径和非批准推理路径均拒绝；Admin需从白名单外公网出口验证403，并从白名单内出口验证错误密码拒绝、正确Entra或原生登录成功。私有Admin LB仅作Front Door回源，不再作为日常客户入口。
+Azure DNS动作在同一检查点中新增或更新`llm-api`和`llm-admin`两条CNAME，分别指向独立endpoint；中途失败可从已知状态继续，第三方漂移会阻止操作。第三方DNS由客户DNS管理员人工新增等效双记录，不选择`--option azure-dns`，也不运行`stage9-dns-publish`。新记录与旧系统域名并存，不是替换旧入口。新域名可解析后立即验证错误率/延迟、PG连接、Redis、预算和Spend Logs。API需确认缺Key、管理路径、非批准推理路径、`POST /v1/models`及`/v1/models/{id}`均拒绝，带Key的`GET /v1/models`返回列表；Admin需从白名单外公网出口验证403，并从白名单内出口验证错误密码拒绝、正确Entra或原生登录成功。私有Admin LB仅作Front Door回源，不再作为日常客户入口。
 
 ### 已发布native dev/test canary新增Admin来源IP
 
@@ -1862,7 +1862,7 @@ az aks start --subscription "$SUBSCRIPTION_ID" \
 - 子网：模板在目标VNet中创建专用子网（建议`/24`，不小于`/26`），挂专用NSG、不挂防火墙路由表；订阅已注册`EnableApplicationGatewayNetworkIsolation`时自动委派给`Microsoft.Network/applicationGateways`。该子网必须包含在**两个**`privateIngress.<plane>.allowedCidrs`中，否则配置校验失败；修改`allowedCidrs`会改变Stage4指纹，须先按Stage4起的标准链路重跑并在Front Door模式下确认入口正常，再切换入口类型。
 - 证书：监听器使用与Traefik相同的公有证书，另存为PKCS#12密钥`api-tls-pfx`/`admin-tls-pfx`，放在模板新建的**网关证书Vault**（`kvagw-<env>-<hash>`）中。Application Gateway读取Key Vault证书必须走“允许受信任的Microsoft服务”例外，仅有私有端点不够；为了不放宽存PEM私钥和ACME账户的证书Vault（保持`bypass=None`），网关证书Vault单独设`bypass=AzureServices`，公网仍关闭、使用私有端点。网关托管身份在该Vault获Secrets User，证书导入人/组（`certificateImporterPrincipalId`）获Secrets Officer。`stage9-edge-certificates`从证书Vault读当前PEM、生成或更新网关证书Vault中的PFX；自动API证书续期在此模式下同时写入PFX。certificate配置使用的身份若不是导入人/组（例如operator UAMI），须另行在网关证书Vault上授予Key Vault Secrets Officer，与证书Vault的授权方式相同。监听器引用无版本URI，续期后自动生效。
 - 来源绑定：网关以重写规则覆盖请求头`X-LLMGW-Edge-Id`为部署输出`edgeId`，`stage9-edge-bind`把两个Traefik业务router的`X-Azure-FDID`绑定替换为该头；直接访问私有LB而不带正确值返回404。与FDID相同，该值只证明请求经过网关，不是密钥；网络准入仍由`allowedCidrs`控制。
-- 流量开关：监听器在禁流量时挂始终Prevention、全部拦截的闸门WAF策略；release后API监听器使用API策略（canary为Detection），Admin监听器使用固定Prevention、`RemoteAddr`白名单的Admin策略。API仅6个推理路径路由到后端，其余路径进入空后端池返回502。
+- 流量开关：监听器在禁流量时挂始终Prevention、全部拦截的闸门WAF策略；release后API监听器使用API策略（canary为Detection），Admin监听器使用固定Prevention、`RemoteAddr`白名单的Admin策略。API仅6个推理路径及模型发现`/models`、`/v1/models`路由到后端（模型列表仅GET，`RateLimitModelList`按`ClientAddr`每分钟`modelListRateLimitPerMinute`次，缺省120），其余路径进入空后端池返回502。
 - 长连接：公网IP空闲超时30分钟、关闭HTTP/2（其前端空闲超时固定180秒）、关闭响应缓冲以逐条转发SSE。无数据等待的非流式请求最长约30分钟；Traefik与LiteLLM自身超时仍然生效。
 - DNS：`stage9-dns-publish`把两条CNAME都指向网关公网IP的`*.<region>.cloudapp.azure.com`名称；检查点与部署记录使用独立名称（`...-s9-edge-appgw`、`...-s9-dns-checkpoint-appgw`），Front Door的记录保持不变，便于回退。
 

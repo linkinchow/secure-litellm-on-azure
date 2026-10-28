@@ -18,7 +18,7 @@ Entra 企业准入、MFA/PIM、灾备/容量、Guardrail/SOC 等生产控制仍�
 
 产品边界：**不采购 LiteLLM Enterprise**，不依赖其原生 JWT/RBAC 或付费审计连接器。若后续批准企业准入，使用客户自有认证代理实现，并单独验证身份、协议与负向权限；它不是当前原生网关的必经跳点。
 
-当前两侧 Front Door 自定义域均为 Approved/Succeeded，使用 ManagedCertificate/TLS12；两条 route 为 Enabled、HttpsOnly 并启用 HTTPS redirect，`linkToDefaultDomain=Disabled`。API 只匹配六条固定路径：`/chat/completions`、`/v1/chat/completions`、`/responses`、`/v1/responses`、`/embeddings`、`/v1/embeddings`；不开放 `/v1/models` 或通配 `/v1/*`。Admin route 为 `/*`，仍受独立 WAF/来源白名单和内层登录约束。这些管理面状态不代替每条路由的真实客户端和旁路负向测试。
+当前两侧 Front Door 自定义域均为 Approved/Succeeded，使用 ManagedCertificate/TLS12；两条 route 为 Enabled、HttpsOnly 并启用 HTTPS redirect，`linkToDefaultDomain=Disabled`。API 只匹配六条固定路径：`/chat/completions`、`/v1/chat/completions`、`/responses`、`/v1/responses`、`/embeddings`、`/v1/embeddings`；不开放 `/v1/models` 或通配 `/v1/*`。后续代码为 Codex 模型发现增加 `GET /models`、`GET /v1/models` 两条精确路径（仅 GET，按客户端 IP 每分钟限流，缺省 120），重新执行 Stage4 ingress 与 Stage9 edge 后才生效；`/v1/models/{id}` 及管理路径仍不开放。Admin route 为 `/*`，仍受独立 WAF/来源白名单和内层登录约束。这些管理面状态不代替每条路由的真实客户端和旁路负向测试。
 
 历史方案已经具备一组有价值的安全基础：
 
@@ -591,7 +591,7 @@ Defender for Cloud Regulatory Compliance Dashboard 用于持续展示控制符�
 | 网络入口 | API Front Door/WAF + API PLS/私有 Traefik | 独立 Admin Front Door/WAF + Admin PLS/私有 Traefik |
 | 身份 | 当前原生 vkey + LiteLLM ACL；Entra 企业准入延期 | 当前原生密码登录；企业 Entra/MFA/PIM 门禁延期 |
 | 凭据 | 每用户/应用独立 vkey、预算与轮换；不把 Key 所有者等同实际人员 | 来源白名单后仍需受控管理员登录；Master Key 不作为普通推理凭据 |
-| API | 六条固定 Chat/Responses/Embeddings 路径，不含 `/v1/models` 或 `/v1/*` | 边缘 `/*`；原生 UI/管理接口仍由后端授权，不等于全部路径匿名可达 |
+| API | 六条固定 Chat/Responses/Embeddings 路径，加仅 GET 且按客户端 IP 限流的 `/models`、`/v1/models`；不含 `/v1/models/{id}` 或 `/v1/*` | 边缘 `/*`；原生 UI/管理接口仍由后端授权，不等于全部路径匿名可达 |
 | 日志 | 调用和安全策略元数据 | 全部管理操作、前后差异和审批单号 |
 | WAF | 当前 Prevention；所需流式/协议逐项回归 | 当前 Prevention；三个 IPv4 `/32` 与一个 IPv6 `/128` 来源白名单 |
 

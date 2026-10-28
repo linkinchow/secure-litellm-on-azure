@@ -97,6 +97,8 @@ class RuntimeRevisionTests(unittest.TestCase):
                 current = self.repository.revisions(self.repository.commit(files))
                 self.assertEqual({runtime for runtime in current if current[runtime] != previous[runtime]}, changed)
                 previous = current
+        # Set the bit in the worktree too: with core.fileMode=true (Linux), "git add -A" would restage the old mode.
+        (self.repository.root / "LiteLLM/runtime/application.py").chmod(0o755)
         self.repository.git("update-index", "--chmod=+x", "LiteLLM/runtime/application.py")
         executable = self.repository.revisions(self.repository.commit())
         self.assertEqual({runtime for runtime in executable if executable[runtime] != previous[runtime]}, {"azure"})

@@ -3,3 +3,5 @@
 !LiteLLM/runtime/
 !LiteLLM/runtime/*.py
 !LiteLLM/runtime/Dockerfile
+LiteLLM/runtime/**/__pycache__
+LiteLLM/runtime/**/*.py[co]

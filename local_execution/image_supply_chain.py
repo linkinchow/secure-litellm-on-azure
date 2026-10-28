@@ -12,7 +12,8 @@ import tempfile
 from datetime import datetime, timezone
 
 from scripts.customer_migration import ROOT, MigrationError, private_write, require
-from scripts.observability import COLLECTOR_DIGEST, COLLECTOR_SOURCE
+from scripts.collector_image import COLLECTOR_DIGEST, COLLECTOR_SOURCE
+from scripts.runtime_revision import ANNOTATION, build_runtime_revision
 from scripts.workflow_diagnostics import command_failure_summary
 
 
@@ -60,6 +61,8 @@ def public_key_path(settings):
 
 def promote_image(config, settings, revision, kind, directory, run=subprocess.run):
     selected = signing_settings(settings, kind)
+    # Sign the digest of the reviewed runtime inputs, not the commit: unrelated commits keep the image valid.
+    runtime_revision = build_runtime_revision(selected["runtime"], revision)
     registry = config["parameters"]["platform"]["containerRegistryName"]
     require(re.fullmatch(r"[a-zA-Z0-9]{5,50}", registry) is not None, "Invalid target ACR name")
     target_tag = selected["targetTag"]
@@ -120,6 +123,7 @@ def promote_image(config, settings, revision, kind, directory, run=subprocess.ru
         require(re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is not None, "Target ACR did not return an immutable image digest")
         if kind == "collector":
             require(digest == COLLECTOR_DIGEST, "Imported collector digest differs from the reviewed source")
+        require(build_runtime_revision(selected["runtime"], revision) == runtime_revision, "Runtime image inputs changed during promotion")
         image = f"{registry}.azurecr.io/{repository}@{digest}"
         execute(["docker", "pull", image], "image-pull", environment=environment)
         sbom = directory / "image-sbom.spdx.json"
@@ -129,6 +133,7 @@ def promote_image(config, settings, revision, kind, directory, run=subprocess.ru
         annotations = [
             "-a", "llmgw.runtime=" + selected["runtime"],
             "-a", "llmgw.revision=" + revision,
+            "-a", ANNOTATION + "=" + runtime_revision,
             "-a", "llmgw.environment=" + config["environment"],
         ]
         execute(["cosign", "sign", "--yes", "--key", str(selected["privateKey"]), *annotations, image], "image-sign", environment=signing_environment)
@@ -144,6 +149,7 @@ def promote_image(config, settings, revision, kind, directory, run=subprocess.ru
             "schemaVersion": 1,
             "check": "target_image_signature_sbom",
             "revision": revision,
+            "runtimeRevision": runtime_revision,
             "environment": config["environment"],
             "image": image,
             "runtime": selected["runtime"],

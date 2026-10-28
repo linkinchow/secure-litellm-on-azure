@@ -70,9 +70,10 @@ class SchemaRuntimeTests(unittest.TestCase):
         def build(_revision):
             return {**runtime_image, "id": next(image_ids), "stderr": ""}
 
-        with tempfile.TemporaryDirectory(dir=ROOT / "temp") as directory, patch("scripts.schema_runtime.AzureCommands", return_value=azure), patch("scripts.schema_runtime.build_hardened_runtime", side_effect=build), patch("scripts.schema_runtime.subprocess.run", return_value=SimpleNamespace(returncode=0, stdout=json.dumps({"accessToken": "synthetic-sensitive-token", "expires_on": int(time.time()) + 3600}))), patch("scripts.schema_runtime.run_schema_container", side_effect=container):
+        with tempfile.TemporaryDirectory(dir=ROOT / "temp") as directory, patch("scripts.schema_runtime.AzureCommands", return_value=azure), patch("scripts.schema_runtime.build_hardened_runtime", side_effect=build), patch("scripts.schema_runtime.subprocess.run", return_value=SimpleNamespace(returncode=0, stdout=json.dumps({"accessToken": "synthetic-sensitive-token", "expires_on": int(time.time()) + 3600}))), patch("scripts.schema_runtime.run_schema_container", side_effect=container), patch("scripts.schema_runtime.build_runtime_revision", return_value="9" * 64) as runtime:
             path = Path(directory)
             plan = migrate_schema(config, "plan", "a" * 40, path, "")
+            runtime.assert_called_once_with("azure", "a" * 40)
             self.assertEqual([operation for operation, _image in calls], ["inspect"])
             with self.assertRaisesRegex(ValueError, "plan changed"):
                 migrate_schema(config, "execute", "a" * 40, path, "f" * 64)
@@ -88,5 +89,6 @@ class SchemaRuntimeTests(unittest.TestCase):
             self.assertEqual(receipt["outputs"]["databaseSchema"]["value"]["image"], runtime_image)
             self.assertEqual(receipt["outputs"]["databaseSchema"]["value"]["executionImageId"], "sha256:" + "f" * 64)
             self.assertEqual(receipt["outputs"]["databaseSchema"]["value"]["planSha256"], plan["planSha256"])
+            self.assertEqual({key: receipt["outputs"]["databaseSchema"]["value"][key] for key in ("revision", "runtimeRevision")}, {"revision": "a" * 40, "runtimeRevision": "9" * 64})
             for name in ("runtime-summary.json", "runtime-review.json"):
                 self.assertNotIn("synthetic-sensitive-token", (path / name).read_text())

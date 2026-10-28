@@ -586,13 +586,20 @@ class LocalExecutionTests(unittest.TestCase):
                     output = json.dumps([{"critical": {"identity": {"docker-reference": "customerregistry.azurecr.io/litellm-azure"}}}])
                 return subprocess.CompletedProcess(arguments, 0, output, "")
 
-            with patch.dict(os.environ, {"COSIGN_PASSWORD": "not-recorded"}):
+            with patch.dict(os.environ, {"COSIGN_PASSWORD": "not-recorded"}), patch("local_execution.image_supply_chain.build_runtime_revision", return_value="c" * 64) as runtime:
                 summary = promote_image(config, settings, "f" * 40, "backend", directory, run=run)
             self.assertTrue(summary["signatureVerified"])
+            self.assertEqual(summary["runtimeRevision"], "c" * 64)
+            self.assertEqual([call.args for call in runtime.call_args_list], [("azure", "f" * 40)] * 2)
+            signing = next(arguments for arguments, _ in calls if arguments[:2] == ["cosign", "sign"])
+            self.assertIn("llmgw.revision=" + "f" * 40, signing)
+            self.assertIn("llmgw.runtimeRevision=" + "c" * 64, signing)
             self.assertFalse((directory / "docker-config/config.json").exists())
             self.assertNotIn("private-token", str(calls))
             self.assertNotIn("not-recorded", str(calls[:-2]))
             self.assertEqual(calls[-1][1]["COSIGN_PASSWORD"], "not-recorded")
+            with patch.dict(os.environ, {"COSIGN_PASSWORD": "not-recorded"}), patch("local_execution.image_supply_chain.build_runtime_revision", side_effect=["c" * 64, "e" * 64]), self.assertRaisesRegex(ValueError, "changed during promotion"):
+                promote_image(config, settings, "f" * 40, "backend", directory, run=run)
 
     def test_backup_restore_reads_image_from_local_settings(self):
         config, settings = self.prepared()

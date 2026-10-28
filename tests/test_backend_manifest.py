@@ -29,6 +29,10 @@ def backend_customer():
     return config
 
 
+def cosign_payload(image, runtime="azure", environment="test", **annotations):
+    return json.dumps([{"critical": {"image": {"docker-manifest-digest": image.rsplit("@", 1)[1]}}, "optional": {"llmgw.runtime": runtime, "llmgw.environment": environment, **annotations}}])
+
+
 class BackendManifestTests(unittest.TestCase):
     def test_native_stage8_publishes_backend_only_with_spend_logs(self):
         config = backend_customer()
@@ -88,7 +92,7 @@ class BackendManifestTests(unittest.TestCase):
 
     def test_local_runtime_signature_uses_explicit_customer_public_key(self):
         config = backend_customer()
-        with tempfile.TemporaryDirectory(dir=ROOT / "temp") as directory, patch("scripts.backend_manifest.subprocess.run", return_value=SimpleNamespace(returncode=0, stdout=json.dumps({"loginServer": "customerregistry.azurecr.io", "accessToken": "synthetic-acr-token"}))), patch("scripts.migration_runtime.run_command") as command:
+        with tempfile.TemporaryDirectory(dir=ROOT / "temp") as directory, patch("scripts.backend_manifest.subprocess.run", return_value=SimpleNamespace(returncode=0, stdout=json.dumps({"loginServer": "customerregistry.azurecr.io", "accessToken": "synthetic-acr-token"}))), patch("scripts.backend_manifest.runtime_revision", return_value="c" * 64), patch("scripts.migration_runtime.run_command", return_value=cosign_payload(config["application"]["backendImage"], **{"llmgw.runtimeRevision": "c" * 64})) as command:
             path = Path(directory)
             public_key = path / "cosign.pub"
             public_key.write_text("public")
@@ -242,7 +246,7 @@ class BackendManifestTests(unittest.TestCase):
         config["parameters"]["platform"]["stage4Network"]["privateEndpointSubnetName"] = "snet-private-endpoints"
         platform = {"stage5Deployed": True, "postgresqlServerName": "target", "keyVaultName": "synthetic-backend", "workloadIdentityClientId": "33333333-3333-4333-8333-333333333333", "workloadIdentityPrincipalId": "44444444-4444-4444-8444-444444444444", "managedRedisHostName": "synthetic.westus.redis.azure.net"}
         revision = "a" * 40
-        common = {"revision": revision, "configSha256": stage_fingerprint(config, 5)}
+        common = {"revision": revision, "runtimeRevision": "c" * 64, "configSha256": stage_fingerprint(config, 5)}
         schema = {**common, "serverId": group_id(config) + "/providers/Microsoft.DBforPostgreSQL/flexibleServers/target", "database": "litellm"}
         versions = {name: {"id": f"https://synthetic-backend.vault.azure.net/secrets/{name}/" + "a" * 32, "version": "a" * 32} for name in BACKEND_SECRETS}
         secrets_receipt = {**common, "vaultId": group_id(config) + "/providers/Microsoft.KeyVault/vaults/synthetic-backend", "secrets": versions}
@@ -259,19 +263,32 @@ class BackendManifestTests(unittest.TestCase):
 
         azure = Mock()
         azure.scoped.side_effect = cloud
-        with tempfile.TemporaryDirectory(dir=ROOT / "temp") as directory, patch.dict("os.environ", {"GITHUB_REPOSITORY": "customer/gateway", "GITHUB_REF": "refs/heads/main"}), patch("scripts.backend_manifest.subprocess.run", return_value=SimpleNamespace(returncode=0, stdout=json.dumps({"loginServer": "customerregistry.azurecr.io", "accessToken": "synthetic-acr-token"}))), patch("scripts.migration_runtime.run_command") as command:
+        with tempfile.TemporaryDirectory(dir=ROOT / "temp") as directory, patch.dict("os.environ", {"GITHUB_REPOSITORY": "customer/gateway", "GITHUB_REF": "refs/heads/main"}), patch("scripts.backend_manifest.subprocess.run", return_value=SimpleNamespace(returncode=0, stdout=json.dumps({"loginServer": "customerregistry.azurecr.io", "accessToken": "synthetic-acr-token"}))), patch("scripts.backend_manifest.runtime_revision", return_value="c" * 64) as current, patch("scripts.migration_runtime.run_command", return_value=cosign_payload(config["application"]["backendImage"], **{"llmgw.revision": "d" * 40, "llmgw.runtimeRevision": "c" * 64})) as command:
             path = Path(directory)
             result = prepare_backend_documents(config, revision, path, azure)
             check_application(result, 6, config)
+            self.assertEqual({call.args for call in current.call_args_list}, {("azure", revision)})
             arguments = command.call_args.args[0]
             self.assertIn("llmgw.runtime=azure", arguments)
-            self.assertIn("llmgw.revision=" + revision, arguments)
+            self.assertNotIn("llmgw.revision=" + revision, arguments)
             self.assertIn("llmgw.environment=test", arguments)
             self.assertIn("https://github.com/customer/gateway/.github/workflows/promote-litellm-image.yml@refs/heads/main", arguments)
             self.assertNotIn("synthetic-acr-token", str(command.call_args))
             self.assertFalse((path / "backend-acr-auth/config.json").exists())
+            # A later commit with the same runtime inputs keeps the receipts; a different runtime revision does not.
             schema["revision"] = "b" * 40
+            prepare_backend_documents(config, revision, path, azure)
+            schema["runtimeRevision"] = "e" * 64
             with self.assertRaisesRegex(ValueError, "stale"):
+                prepare_backend_documents(config, revision, path, azure)
+            # Receipts written before runtime revisions existed still require the exact commit.
+            del schema["runtimeRevision"]
+            with self.assertRaisesRegex(ValueError, "stale"):
+                prepare_backend_documents(config, revision, path, azure)
+            schema["revision"] = revision
+            prepare_backend_documents(config, revision, path, azure)
+            command.return_value = cosign_payload(config["application"]["backendImage"], **{"llmgw.revision": revision, "llmgw.runtimeRevision": "e" * 64})
+            with self.assertRaisesRegex(ValueError, "rebuild and re-sign"):
                 prepare_backend_documents(config, revision, path, azure)
 
     def test_rendered_backend_uses_real_outputs_without_secret_sync_or_legacy_refs(self):

@@ -14,6 +14,7 @@ from scripts.customer_migration import (
     COMPONENTS, ROOT, SUBSCRIPTION_COMPONENTS, MigrationError, active_stages, approval_policy, availability_zones, configured,
     fingerprint, prepare, private_write, require, stage_fingerprint, validate_config, validate_evidence,
 )
+from scripts.api_protocol import MODEL_LIST_RATE_LIMIT
 from scripts.workflow_diagnostics import command_failure_summary, command_name, diagnostic_exit
 
 
@@ -358,7 +359,7 @@ def _app_gateway_release_checks(config, resolved, release, revision, azure, dire
     edge = resolved["parameters"]["edge"]
     from scripts.customer_migration import admin_source_cidrs
     require(release["adminAllowedCidrs"] == admin_source_cidrs(edge["adminAllowedCidrs"]), "Release Admin source-IP allowlist differs from the reviewed edge")
-    require(release["logAnalyticsWorkspaceName"] == edge["logAnalyticsWorkspaceName"] and release["rateLimitPerMinute"] == edge.get("rateLimitPerMinute", 600) and release["adminRateLimitPerMinute"] == edge.get("adminRateLimitPerMinute", 120), "Release logging/rate configuration mismatch")
+    require(release["logAnalyticsWorkspaceName"] == edge["logAnalyticsWorkspaceName"] and release["rateLimitPerMinute"] == edge.get("rateLimitPerMinute", 600) and release["adminRateLimitPerMinute"] == edge.get("adminRateLimitPerMinute", 120) and release.get("modelListRateLimitPerMinute", MODEL_LIST_RATE_LIMIT) == edge.get("modelListRateLimitPerMinute", MODEL_LIST_RATE_LIMIT), "Release logging/rate configuration mismatch")
     from scripts.app_gateway import APP_GATEWAY_HEADER, deployment_output, require_backend_health
     previous_edge = deployment_output(config, azure)
     require(release.get("edgeId") == previous_edge.get("edgeId"), "Release edge identity differs from the provisioned Application Gateway")
@@ -462,7 +463,7 @@ def deploy_component(config, stage, component, revision, operation, previous, di
         require(release["privateOrigin"] == resolved["parameters"]["edge"]["privateOrigin"], "Release PLS differs from deployed origin")
         require(release["adminPrivateOrigin"] == resolved["parameters"]["edge"]["adminPrivateOrigin"], "Release Admin PLS differs from deployed origin")
         require(release["adminAllowedCidrs"] == resolved["parameters"]["edge"]["adminAllowedCidrs"], "Release Admin source-IP allowlist differs from the reviewed edge")
-        require(release["logAnalyticsWorkspaceName"] == resolved["parameters"]["edge"]["logAnalyticsWorkspaceName"] and release["rateLimitPerMinute"] == resolved["parameters"]["edge"].get("rateLimitPerMinute", 600) and release["adminRateLimitPerMinute"] == resolved["parameters"]["edge"].get("adminRateLimitPerMinute", 120), "Release logging/rate configuration mismatch")
+        require(release["logAnalyticsWorkspaceName"] == resolved["parameters"]["edge"]["logAnalyticsWorkspaceName"] and release["rateLimitPerMinute"] == resolved["parameters"]["edge"].get("rateLimitPerMinute", 600) and release["adminRateLimitPerMinute"] == resolved["parameters"]["edge"].get("adminRateLimitPerMinute", 120) and release.get("modelListRateLimitPerMinute", MODEL_LIST_RATE_LIMIT) == resolved["parameters"]["edge"].get("modelListRateLimitPerMinute", MODEL_LIST_RATE_LIMIT), "Release logging/rate configuration mismatch")
         previous_edge = azure.scoped(["deployment", "group", "show", "--resource-group", config["target"]["resourceGroup"], "--name", deployment_name(config, 9, "edge"), "--query", "{state:properties.provisioningState,edge:properties.outputs.edge.value}"])
         require(previous_edge.get("state") == "Succeeded", "Provision the disabled edge before releasing traffic")
         require(release.get("frontDoorId") == previous_edge.get("edge", {}).get("profileId"), "Release Front Door identity differs from the provisioned edge")

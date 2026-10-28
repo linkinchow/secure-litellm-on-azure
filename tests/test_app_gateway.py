@@ -50,7 +50,7 @@ def gateway_output(config, **changes):
         "publicIpFqdn": f"llm-test-gw.abc123def.{config['location']}.sysgen.cloudapp.azure.com", "edgeHeader": APP_GATEWAY_HEADER, "edgeId": EDGE_ID,
         **{key + "Id": prefix + "Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies/" + resource[key] for key in ("apiWaf", "adminWaf", "gateWaf")},
         "adminAccessMode": "SourceIpAllowlistAndNativeLogin", "adminAllowedCidrs": ["20.30.40.50/32"], "adminRateLimitPerMinute": 120,
-        "rateLimitPerMinute": 600, "backendAddresses": {"api": "10.30.4.10", "admin": "10.30.4.11"}, "subnetPrefix": SUBNET,
+        "rateLimitPerMinute": 600, "modelListRateLimitPerMinute": 120, "backendAddresses": {"api": "10.30.4.10", "admin": "10.30.4.11"}, "subnetPrefix": SUBNET,
     }
     edge.update(changes)
     return edge
@@ -67,7 +67,7 @@ def live_gateway(config, edge):
         "sslCertificates": [{"name": plane, "properties": {"keyVaultSecretId": f"https://{gateway_vault_name(config)}.vault.azure.net/secrets/{plane}-tls-pfx"}} for plane in hosts],
         "backendAddressPools": [{"name": "api", "properties": {"backendAddresses": [{"ipAddress": "10.30.4.10"}]}}, {"name": "admin", "properties": {"backendAddresses": [{"ipAddress": "10.30.4.11"}]}}, {"name": "deny", "properties": {"backendAddresses": []}}],
         "rewriteRuleSets": [{"name": "edge-identity", "properties": {"rewriteRules": [{"actionSet": {"requestHeaderConfigurations": [{"headerName": APP_GATEWAY_HEADER, "headerValue": edge["edgeId"]}]}}]}}],
-        "urlPathMaps": [{"name": "api-paths", "properties": {"defaultBackendAddressPool": {"id": gateway + "/backendAddressPools/deny"}, "pathRules": [{"properties": {"paths": ["/chat/completions", "/v1/chat/completions", "/responses", "/v1/responses", "/embeddings", "/v1/embeddings"]}}]}}],
+        "urlPathMaps": [{"name": "api-paths", "properties": {"defaultBackendAddressPool": {"id": gateway + "/backendAddressPools/deny"}, "pathRules": [{"properties": {"paths": ["/chat/completions", "/v1/chat/completions", "/responses", "/v1/responses", "/embeddings", "/v1/embeddings", "/models", "/v1/models"]}}]}}],
     }}
 
 
@@ -140,6 +140,11 @@ class AppGatewayConfigurationTests(unittest.TestCase):
         self.assertEqual((values["certificateWriterPrincipalId"], values["certificateWriterPrincipalType"], values["deployGateway"]), (vault["certificateImporterPrincipalId"], vault["certificateImporterPrincipalType"], False))
         self.assertNotEqual(values["certificateWriterPrincipalId"], vault["ingressReaderPrincipalId"])
         self.assertEqual((values["subnetPrefix"], values["requestTimeoutSeconds"], values["availabilityZones"]), (SUBNET, 900, ["1", "2", "3"]))
+        self.assertEqual((values["rateLimitPerMinute"], values["adminRateLimitPerMinute"], values["modelListRateLimitPerMinute"]), (600, 120, 120))
+        tuned = app_gateway_customer()
+        tuned["parameters"]["edge"]["modelListRateLimitPerMinute"] = 60
+        validate_config(tuned, "test")
+        self.assertEqual(parameters_for(tuned, 9, "edge")[1]["parameters"]["modelListRateLimitPerMinute"], {"value": 60})
         compiled = json.loads(subprocess.run(["az", "bicep", "build", "--file", str(template), "--stdout"], capture_output=True, text=True, check=True).stdout)
         declarations = compiled["parameters"]
         self.assertFalse(set(values) - set(declarations))
@@ -163,6 +168,9 @@ class AppGatewayConfigurationTests(unittest.TestCase):
             "bad timeout": lambda config: config["parameters"]["edge"].update(requestTimeoutSeconds=30),
             "bad zones": lambda config: config["parameters"]["edge"].update(availabilityZones=["4"]),
             "prompt exclusion type": lambda config: config["parameters"]["edge"].update(wafExcludePromptFields="yes"),
+            "model-list rate zero": lambda config: config["parameters"]["edge"].update(modelListRateLimitPerMinute=0),
+            "model-list rate too high": lambda config: config["parameters"]["edge"].update(modelListRateLimitPerMinute=10001),
+            "model-list rate type": lambda config: config["parameters"]["edge"].update(modelListRateLimitPerMinute="120"),
         }
         for label, change in cases.items():
             with self.subTest(label):
@@ -175,6 +183,15 @@ class AppGatewayConfigurationTests(unittest.TestCase):
         front_door["parameters"]["edge"]["subnetPrefix"] = SUBNET
         with self.assertRaisesRegex(ValueError, "require edge.type=applicationGateway"):
             validate_config(front_door, "test")
+        for value in (0, 10001, True, "120"):
+            front_door = native_customer()
+            front_door["parameters"]["edge"]["modelListRateLimitPerMinute"] = value
+            with self.subTest(front_door=value), self.assertRaisesRegex(ValueError, "modelListRateLimitPerMinute"):
+                validate_config(front_door, "test")
+        front_door = native_customer()
+        front_door["parameters"]["edge"]["modelListRateLimitPerMinute"] = 240
+        validate_config(front_door, "test")
+        self.assertEqual(parameters_for(front_door, 9, "edge")[1]["parameters"]["modelListRateLimitPerMinute"], {"value": 240})
 
     def test_change_scope_allows_only_the_gateway_contract(self):
         config = app_gateway_customer()
@@ -225,6 +242,8 @@ class AppGatewayRuntimeTests(unittest.TestCase):
             "traffic state": opened,
             "edge identity": json.loads(json.dumps(live_gateway(config, edge)).replace(EDGE_ID, FRONT_DOOR_ID)),
             "path allowlist": json.loads(json.dumps(live_gateway(config, edge)).replace('"/v1/embeddings"', '"/v1/models"')),
+            "model detail path": json.loads(json.dumps(live_gateway(config, edge)).replace('"/v1/models"', '"/v1/models/*"')),
+            "missing model list": json.loads(json.dumps(live_gateway(config, edge)).replace(', "/models", "/v1/models"', '')),
             "http2": json.loads(json.dumps(live_gateway(config, edge)).replace('"enableHttp2": false', '"enableHttp2": true')),
         }
         for label, gateway in drifts.items():

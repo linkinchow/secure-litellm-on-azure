@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from scripts.api_protocol import api_method_rules
+from scripts.api_protocol import api_method_rules, model_list_rate_rule
 from tests import waf_security_probe as probe
 from tests.test_edge_security_probe import Response
 
@@ -26,7 +26,7 @@ def config():
 
 def policy(plane="api"):
     cfg = config()
-    rules = api_method_rules() if plane == "api" else [{
+    rules = [*api_method_rules(), model_list_rate_rule(120)] if plane == "api" else [{
         "name": "BlockUnapprovedAdminSources", "priority": 5, "enabledState": "Enabled",
         "ruleType": "MatchRule", "action": "Block", "matchConditions": [{
             "matchVariable": "SocketAddr", "operator": "IPMatch", "negateCondition": True,
@@ -122,7 +122,7 @@ class WafSecurityProbeTests(unittest.TestCase):
     def test_policy_contract_detects_drift_not_just_rule_name(self):
         for plane in ("api", "admin"):
             self.assertTrue(all(item["result"] == "pass" for item in probe.policy_checks(policy(plane), plane, config())))
-        for change in ("method", "allow", "scrubbing", "threshold", "managed-exclusion"):
+        for change in ("method", "allow", "scrubbing", "threshold", "managed-exclusion", "model-list-threshold", "model-list-group", "model-list-missing"):
             live = policy()
             if change == "method":
                 live["properties"]["customRules"]["rules"][0]["matchConditions"][0]["matchValue"] = ["POST"]
@@ -132,6 +132,12 @@ class WafSecurityProbeTests(unittest.TestCase):
                 live["properties"]["policySettings"]["logScrubbing"]["state"] = "Disabled"
             elif change == "managed-exclusion":
                 live["properties"]["managedRules"]["managedRuleSets"][0]["exclusions"] = [{"synthetic": True}]
+            elif change == "model-list-threshold":
+                live["properties"]["customRules"]["rules"][-2]["rateLimitThreshold"] = 600
+            elif change == "model-list-group":
+                live["properties"]["customRules"]["rules"][-2]["groupBy"] = []
+            elif change == "model-list-missing":
+                del live["properties"]["customRules"]["rules"][-2]
             else:
                 live["properties"]["customRules"]["rules"][-1]["rateLimitThreshold"] = 1
             self.assertTrue(any(item["result"] == "fail" for item in probe.policy_checks(live, "api", config())))
@@ -150,7 +156,8 @@ class WafSecurityProbeTests(unittest.TestCase):
 
     def test_bounded_cases_never_send_real_credentials_or_model_calls(self):
         cases = probe.cases("https://llm-admin.customer.invalid", "unapproved")
-        self.assertEqual(len(cases), 10)
+        self.assertEqual(len(cases), 11)
+        self.assertEqual(next(item for item in cases if item["name"] == "model-list-post")["rule"], "BlockModelListNonGet")
         self.assertTrue(all(not item.get("realKey") for item in cases))
         self.assertTrue(all("model" not in item.get("body", {}) or
                             item["body"]["model"] == "security-probe-no-model" for item in cases))
@@ -252,10 +259,10 @@ class WafSecurityProbeTests(unittest.TestCase):
                     patch.object(probe, "request_case", side_effect=response) as request, \
                     patch.object(probe.time, "sleep") as sleep, patch("sys.stdout", io.StringIO()):
                 self.assertEqual(probe.run(args), 0)
-            self.assertEqual(request.call_count, 7)
-            self.assertEqual([call.args[0] for call in sleep.call_args_list], [2] * 6)
+            self.assertEqual(request.call_count, 8)
+            self.assertEqual([call.args[0] for call in sleep.call_args_list], [2] * 7)
             output = json.loads(args.output_json.read_text())
-            self.assertEqual(output["requestCount"], 7)
+            self.assertEqual(output["requestCount"], 8)
             self.assertTrue(output["pendingWafEvidence"])
             self.assertFalse(output["rateLimitTested"])
             self.assertFalse(output["modelCallsRequested"])

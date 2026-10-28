@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 
 from local_execution.runner import authenticate_azure, load_config, operation_root, reviewed_revision
+from scripts.api_protocol import MODEL_LIST_RATE_LIMIT
 from scripts.customer_migration import ROOT, MigrationError, approval_policy, private_write, require, stage_fingerprint
 from scripts.edge_binding import deployed_edge
 from scripts.migration_deploy import AzureCommands, deployment_name, resolve_origin
@@ -37,7 +38,7 @@ def generate_report(config, settings, revision, change_ticket, approvers, azure)
     require(deployment.get("state") == "Succeeded", "Edge deployment must be Succeeded")
     actual = deployment.get("parameters", {})
     for field, default in (("logAnalyticsWorkspaceName", None), ("rateLimitPerMinute", 600),
-                           ("adminRateLimitPerMinute", 120)):
+                           ("adminRateLimitPerMinute", 120), ("modelListRateLimitPerMinute", MODEL_LIST_RATE_LIMIT)):
         require(actual.get(field, {}).get("value") == parameters.get(field, default),
                 f"Deployed {field} differs from the current configuration")
     report = {
@@ -53,6 +54,7 @@ def generate_report(config, settings, revision, change_ticket, approvers, azure)
         "logAnalyticsWorkspaceName": parameters["logAnalyticsWorkspaceName"],
         "rateLimitPerMinute": parameters.get("rateLimitPerMinute", 600),
         "adminRateLimitPerMinute": parameters.get("adminRateLimitPerMinute", 120),
+        "modelListRateLimitPerMinute": parameters.get("modelListRateLimitPerMinute", MODEL_LIST_RATE_LIMIT),
         "wafMode": "Detection",
         "changeTicket": change_ticket,
         "approvedBy": approvers,

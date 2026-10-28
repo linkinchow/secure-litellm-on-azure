@@ -10,12 +10,16 @@ from urllib.parse import urlsplit
 
 import yaml
 
+from scripts.api_protocol import MODEL_LIST_PATHS
 from scripts.customer_migration import ROOT, availability_zones, on_user_pool, require, spread_across_zones
 from scripts.render_stage7_domain import domain_hosts
 
 
-NATIVE_API_PATHS = ("/chat/completions", "/v1/chat/completions", "/responses", "/v1/responses", "/embeddings", "/v1/embeddings")
+NATIVE_INFERENCE_PATHS = ("/chat/completions", "/v1/chat/completions", "/responses", "/v1/responses", "/embeddings", "/v1/embeddings")
+NATIVE_MODEL_LIST_PATHS = MODEL_LIST_PATHS
 NATIVE_WSS_PATHS = ("/responses", "/v1/responses")
+# Every path a public edge routes to the API plane; methods are narrowed here and by the API WAF.
+NATIVE_API_PATHS = NATIVE_INFERENCE_PATHS + NATIVE_MODEL_LIST_PATHS
 FRONT_DOOR_HEADER = "X-Azure-FDID"
 APP_GATEWAY_HEADER = "X-LLMGW-Edge-Id"
 # Header the private ingress requires from its public edge, and the pod annotation recording it.
@@ -28,14 +32,15 @@ def edge_header_bindings(rule):
 
 
 def native_api_rule(host, front_door_id=None, header=FRONT_DOOR_HEADER):
-    path_rule = " || ".join(f"Path(`{path}`)" for path in NATIVE_API_PATHS)
+    path_rule = " || ".join(f"Path(`{path}`)" for path in NATIVE_INFERENCE_PATHS)
+    model_paths = " || ".join(f"Path(`{path}`)" for path in NATIVE_MODEL_LIST_PATHS)
     websocket_paths = " || ".join(f"Path(`{path}`)" for path in NATIVE_WSS_PATHS)
     websocket = (
         f"Method(`GET`) && ({websocket_paths})"
         " && HeaderRegexp(`Upgrade`, `(?i)^websocket$`)"
         " && HeaderRegexp(`Connection`, `(?i)(^|[, \\t])upgrade([, \\t]|$)`)"
     )
-    rule = f"Host(`{host}`) && ((Method(`POST`) && ({path_rule})) || ({websocket}))"
+    rule = f"Host(`{host}`) && ((Method(`POST`) && ({path_rule})) || (Method(`GET`) && ({model_paths})) || ({websocket}))"
     if front_door_id is not None:
         require(header in EDGE_HEADERS, "Unknown edge identity header")
         rule += f" && HeaderRegexp(`{header}`, `(?i)^{front_door_id}$`)"

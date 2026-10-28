@@ -16,7 +16,7 @@ import time
 from urllib.parse import quote, urlsplit
 from urllib.request import ProxyHandler, build_opener
 
-from scripts.api_protocol import api_method_rules
+from scripts.api_protocol import MODEL_LIST_RATE_LIMIT, MODEL_LIST_RATE_RULE, api_method_rules, model_list_rate_rule
 from tests.edge_security_probe import NoRedirect, base_url, request_case, write_report
 
 
@@ -170,6 +170,12 @@ def policy_checks(policy, plane, config):
         for desired in api_method_rules():
             matches = [item for item in rules if item.get("name") == desired["name"]]
             checks.append(check(desired["name"], len(matches) == 1 and rule_matches(matches[0], desired)))
+        desired = model_list_rate_rule(config["parameters"]["edge"].get("modelListRateLimitPerMinute", MODEL_LIST_RATE_LIMIT))
+        matches = [item for item in rules if item.get("name") == MODEL_LIST_RATE_RULE]
+        checks.append(check(MODEL_LIST_RATE_RULE, len(matches) == 1 and rule_matches(matches[0], desired)
+                            and matches[0].get("groupBy") == desired["groupBy"]
+                            and matches[0].get("rateLimitThreshold") == desired["rateLimitThreshold"]
+                            and matches[0].get("rateLimitDurationInMinutes") == 1))
     else:
         matches = [item for item in rules if item.get("name") == "BlockUnapprovedAdminSources"]
         wanted = {"name": "BlockUnapprovedAdminSources", "priority": 5, "enabledState": "Enabled",
@@ -342,6 +348,7 @@ def cases(admin_url, source):
         ("missing-upgrade", "GET", "/v1/responses", {}, "BlockInvalidWebSocketUpgrade"),
         ("bad-connection", "GET", "/v1/responses", {"Upgrade": "websocket", "Connection": "close"},
          "BlockInvalidWebSocketConnection"),
+        ("model-list-post", "POST", "/v1/models", {}, "BlockModelListNonGet"),
     ]:
         result.append({"name": name, "method": method, "path": path, "headers": headers,
                        "expected": [403], "goal": "waf-log-correlation", "plane": "api", "rule": rule})

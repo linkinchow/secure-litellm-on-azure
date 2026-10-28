@@ -34,6 +34,36 @@ class Stage9TemplateTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     validate_templates(edge, self.origin)
 
+    def test_model_list_route_is_exact_get_only_and_rate_limited(self):
+        resources = self.edge["resources"]
+        resources = list(resources.values() if isinstance(resources, dict) else resources)
+        route = next(item for item in resources if item["type"].endswith("/routes") and "admin" not in item["name"])
+        self.assertTrue({"/models", "/v1/models"} <= set(route["properties"]["patternsToMatch"]))
+        self.assertFalse(any(pattern.startswith("/v1/models/") or "*" in pattern for pattern in route["properties"]["patternsToMatch"]))
+        waf = next(item for item in resources if item["type"] == "Microsoft.Network/FrontDoorWebApplicationFirewallPolicies" and "wafllmadmin" not in item["name"])
+        rules = {rule["name"]: rule for rule in waf["properties"]["customRules"]["rules"]}
+        self.assertEqual([rules[name]["priority"] for name in ("BlockModelListNonGet", "RateLimitModelList", "RateLimitApi")], [14, 15, 20])
+        rate = rules["RateLimitModelList"]
+        self.assertEqual((rate["ruleType"], rate["action"], rate["rateLimitDurationInMinutes"], rate["rateLimitThreshold"], rate["groupBy"]),
+                         ("RateLimitRule", "Block", 1, "[parameters('modelListRateLimitPerMinute')]", [{"variableName": "SocketAddr"}]))
+        self.assertEqual(self.edge["parameters"]["modelListRateLimitPerMinute"]["defaultValue"], 120)
+        for change in ("detail-pattern", "threshold", "rate-scope", "non-get"):
+            with self.subTest(change=change):
+                edge = copy.deepcopy(self.edge)
+                items = list(edge["resources"].values() if isinstance(edge["resources"], dict) else edge["resources"])
+                edge_route = next(item for item in items if item["type"].endswith("/routes") and "admin" not in item["name"])
+                edge_rules = {rule["name"]: rule for rule in next(item for item in items if item["type"] == waf["type"] and item["name"] == waf["name"])["properties"]["customRules"]["rules"]}
+                if change == "detail-pattern":
+                    edge_route["properties"]["patternsToMatch"].append("/v1/models/*")
+                elif change == "threshold":
+                    edge_rules["RateLimitModelList"]["rateLimitThreshold"] = 600
+                elif change == "rate-scope":
+                    edge_rules["RateLimitModelList"]["matchConditions"][0]["matchValue"] = ["^/"]
+                else:
+                    edge_rules["BlockModelListNonGet"]["enabledState"] = "Disabled"
+                with self.assertRaises(AssertionError):
+                    validate_templates(edge, self.origin)
+
     def test_ingress_wildcard_is_rejected(self):
         documents = copy.deepcopy(self.documents)
         ingress = next(item for item in documents if item["kind"] == "Ingress" and item["metadata"]["name"] == "llm-api")

@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 import yaml
 
 from local_execution.api_wss import assert_protocol_changes, desired_waf, update
-from scripts.api_protocol import api_method_rules
+from scripts.api_protocol import MODEL_LIST_RATE_RULE, api_method_rules, model_list_rate_rule
 from scripts.customer_migration import ROOT, MigrationError
 from scripts.migration_deploy import group_id
 from scripts.private_ingress import native_api_rule, preserve_native_front_door_binding, render_ingress
@@ -50,6 +50,7 @@ class ApiWssTests(unittest.TestCase):
         rule = native_api_rule(host, fdid)
         self.assertTrue(rule.startswith(f"Host(`{host}`) && ((Method(`POST`)"))
         self.assertIn("Method(`GET`) && (Path(`/responses`) || Path(`/v1/responses`))", rule)
+        self.assertIn("(Method(`GET`) && (Path(`/models`) || Path(`/v1/models`)))", rule)
         self.assertTrue(rule.endswith(f"&& HeaderRegexp(`X-Azure-FDID`, `(?i)^{fdid}$`)"))
         self.assertIn("HeaderRegexp(`Upgrade`", rule)
         self.assertIn("HeaderRegexp(`Connection`", rule)
@@ -88,20 +89,28 @@ class ApiWssTests(unittest.TestCase):
             self.assertFalse(blocked("GET", path, "websocket", "keep-alive,\tupgrade"))
             for upgrade, connection in (("", ""), ("websocket", ""), ("http", "upgrade"), ("websocket", "not-upgrade")):
                 self.assertTrue(blocked("GET", path, upgrade, connection))
-        for path in ("/v1/chat/completions", "/v1/embeddings", "/v1/models", "/ui/", "/responses/extra",
-                     "https://api.example.com/v1/models", "https://api.example.com/v1/embeddings?path=/responses",
-                     "http://api.example.com/responses"):
+        for path in ("/v1/chat/completions", "/v1/embeddings", "/ui/", "/responses/extra", "/v1/models/coding", "/models/",
+                     "/v1/models/coding?x=1", "/model/info", "https://api.example.com/v1/models/coding",
+                     "https://api.example.com/v1/embeddings?path=/responses", "http://api.example.com/responses",
+                     "http://api.example.com/v1/models"):
             self.assertTrue(blocked("GET", path, "websocket", "upgrade"))
+            self.assertTrue(blocked("GET", path))
+        # Model discovery is plain HTTP GET; every other method on it is blocked.
+        for path in ("/models", "/v1/models", "/v1/models?client_version=0.165.0", "https://api.example.com/v1/models"):
+            self.assertFalse(blocked("GET", path))
+            for method in ("POST", "HEAD", "PUT", "DELETE", "OPTIONS"):
+                self.assertTrue(blocked(method, path))
         for method in ("HEAD", "PUT", "DELETE", "TRACE", "OPTIONS"):
             self.assertTrue(blocked(method, "/v1/responses", "websocket", "upgrade"))
         self.assertTrue(all(rule["action"] == "Block" for rule in api_method_rules()))
+        self.assertEqual([rule["priority"] for rule in api_method_rules()], [10, 11, 12, 13, 14])
 
     def test_single_resource_preserves_mode_rate_managed_rules_and_tags(self):
         live = live_waf("/synthetic/api")
         before = copy.deepcopy(live)
         desired = desired_waf(live, live["id"])
         self.assertEqual(live, before)
-        self.assertEqual(desired["properties"]["customRules"]["rules"][:-1], api_method_rules())
+        self.assertEqual(desired["properties"]["customRules"]["rules"][:-1], [*api_method_rules(), model_list_rate_rule(120)])
         self.assertEqual(desired["properties"]["customRules"]["rules"][-1], live["properties"]["customRules"]["rules"][-1])
         for key in ("policySettings", "managedRules"):
             self.assertEqual(desired["properties"][key], live["properties"][key])
@@ -113,9 +122,25 @@ class ApiWssTests(unittest.TestCase):
             condition.setdefault("negateCondition", False)
             condition.setdefault("transforms", [])
             condition.setdefault("selector", None)
-        for rule in new_live["properties"]["customRules"]["rules"][:-1]:
+        for rule in new_live["properties"]["customRules"]["rules"][:-2]:
             rule.update(groupBy=[], rateLimitDurationInMinutes=None, rateLimitThreshold=None)
         self.assertEqual(desired_waf(new_live, live["id"])["properties"]["policySettings"]["mode"], "Detection")
+
+    def test_responses_only_baseline_upgrades_to_model_list_rules(self):
+        live = live_waf("/synthetic/api")
+        rate = live["properties"]["customRules"]["rules"][-1]
+        live["properties"]["customRules"]["rules"] = [*api_method_rules(model_list=False), rate]
+        desired = desired_waf(live, live["id"], 90)["properties"]["customRules"]["rules"]
+        self.assertEqual(desired, [*api_method_rules(), model_list_rate_rule(90), rate])
+        self.assertEqual([rule["name"] for rule in desired[-3:]], ["BlockModelListNonGet", MODEL_LIST_RATE_RULE, "RateLimitApi"])
+        self.assertEqual((desired[-2]["priority"], desired[-2]["rateLimitThreshold"], desired[-2]["groupBy"]), (15, 90, [{"variableName": "SocketAddr"}]))
+        current = copy.deepcopy(live)
+        current["properties"]["customRules"]["rules"] = copy.deepcopy(desired)
+        self.assertEqual(desired_waf(current, live["id"], 120)["properties"]["customRules"]["rules"][-2]["rateLimitThreshold"], 120)
+        partial = copy.deepcopy(live)
+        partial["properties"]["customRules"]["rules"] = [*api_method_rules()[:4], rate]
+        with self.assertRaisesRegex(MigrationError, "baseline"):
+            desired_waf(partial, live["id"])
 
     def test_sku_requires_valid_name_and_excludes_get_only_fields(self):
         for sku in (None, {}, {"name": None}, {"name": "Classic_AzureFrontDoor"}, "invalid"):
@@ -132,7 +157,7 @@ class ApiWssTests(unittest.TestCase):
         rule = live["properties"]["customRules"]["rules"][0]
         rule.update(groupBy=[], rateLimitDurationInMinutes=None, rateLimitThreshold=None)
         rule["matchConditions"][0].update(selector=None, transforms=[])
-        self.assertEqual(desired_waf(live, live["id"])["properties"]["customRules"]["rules"][:-1], api_method_rules())
+        self.assertEqual(desired_waf(live, live["id"])["properties"]["customRules"]["rules"][:-2], api_method_rules())
         rule["groupBy"] = [{"variableName": "Header", "selector": "unapproved"}]
         with self.assertRaisesRegex(MigrationError, "baseline"):
             desired_waf(live, live["id"])

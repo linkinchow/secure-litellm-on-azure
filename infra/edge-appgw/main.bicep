@@ -42,6 +42,11 @@ param rateLimitPerMinute int = 600
 @description('Admin per-client-IP rate threshold per minute after source-IP admission.')
 param adminRateLimitPerMinute int = 120
 
+@minValue(1)
+@maxValue(10000)
+@description('Per-client-IP threshold per minute for GET /models and /v1/models (Codex model discovery); 120 matches the legacy ingress 2 requests/second.')
+param modelListRateLimitPerMinute int = 120
+
 @description('Existing target VNet that holds the private ingress subnet.')
 param virtualNetworkName string = 'litellm-security-vnet'
 
@@ -112,7 +117,8 @@ var publicIpId = resourceId('Microsoft.Network/publicIPAddresses', 'pip-agw-llm-
 // Not a secret: like the Front Door ID it only proves the request passed this gateway.
 var edgeHeader = 'X-LLMGW-Edge-Id'
 var edgeId = guid(resourceGroup().id, environmentName, 'llmgw-appgw-edge-identity')
-var apiPaths = ['/chat/completions', '/v1/chat/completions', '/responses', '/v1/responses', '/embeddings', '/v1/embeddings']
+// Exact paths; /models and /v1/models are model discovery, admitted by the API WAF for GET only.
+var apiPaths = ['/chat/completions', '/v1/chat/completions', '/responses', '/v1/responses', '/embeddings', '/v1/embeddings', '/models', '/v1/models']
 var zones = empty(availabilityZones) ? null : availabilityZones
 // The WAF flattens JSON bodies into argument names such as messages.content.
 var promptFields = ['messages', 'system', 'input', 'instructions', 'prompt']
@@ -302,7 +308,7 @@ resource apiWaf 'Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolic
         action: 'Block'
         matchConditions: [
           { matchVariables: [{ variableName: 'RequestMethod' }], operator: 'Equal', negationConditon: false, matchValues: ['GET'] }
-          { matchVariables: [{ variableName: 'RequestUri' }], operator: 'Regex', negationConditon: true, matchValues: ['^/(v1/)?responses(\\?.*)?$'] }
+          { matchVariables: [{ variableName: 'RequestUri' }], operator: 'Regex', negationConditon: true, matchValues: ['^/(v1/)?(responses|models)(\\?.*)?$'] }
         ]
       }
       {
@@ -313,6 +319,7 @@ resource apiWaf 'Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolic
         action: 'Block'
         matchConditions: [
           { matchVariables: [{ variableName: 'RequestMethod' }], operator: 'Equal', negationConditon: false, matchValues: ['GET'] }
+          { matchVariables: [{ variableName: 'RequestUri' }], operator: 'Regex', negationConditon: false, matchValues: ['^/(v1/)?responses(\\?.*)?$'] }
           { matchVariables: [{ variableName: 'RequestHeaders', selector: 'Upgrade' }], operator: 'Equal', negationConditon: true, matchValues: ['websocket'], transforms: ['Lowercase'] }
         ]
       }
@@ -324,8 +331,31 @@ resource apiWaf 'Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolic
         action: 'Block'
         matchConditions: [
           { matchVariables: [{ variableName: 'RequestMethod' }], operator: 'Equal', negationConditon: false, matchValues: ['GET'] }
+          { matchVariables: [{ variableName: 'RequestUri' }], operator: 'Regex', negationConditon: false, matchValues: ['^/(v1/)?responses(\\?.*)?$'] }
           { matchVariables: [{ variableName: 'RequestHeaders', selector: 'Connection' }], operator: 'Regex', negationConditon: true, matchValues: ['(^|[, \\t])upgrade([, \\t]|$)'], transforms: ['Lowercase'] }
         ]
+      }
+      {
+        name: 'BlockModelListNonGet'
+        priority: 14
+        state: 'Enabled'
+        ruleType: 'MatchRule'
+        action: 'Block'
+        matchConditions: [
+          { matchVariables: [{ variableName: 'RequestMethod' }], operator: 'Equal', negationConditon: true, matchValues: ['GET'] }
+          { matchVariables: [{ variableName: 'RequestUri' }], operator: 'Regex', negationConditon: false, matchValues: ['^/(v1/)?models(\\?.*)?$'] }
+        ]
+      }
+      {
+        name: 'RateLimitModelList'
+        priority: 15
+        state: 'Enabled'
+        ruleType: 'RateLimitRule'
+        rateLimitDuration: 'OneMin'
+        rateLimitThreshold: modelListRateLimitPerMinute
+        groupByUserSession: [{ groupByVariables: [{ variableName: 'ClientAddr' }] }]
+        action: 'Block'
+        matchConditions: [{ matchVariables: [{ variableName: 'RequestUri' }], operator: 'Regex', negationConditon: false, matchValues: ['^/(v1/)?models(\\?.*)?$'] }]
       }
       {
         name: 'RateLimitApi'
@@ -568,6 +598,7 @@ output edge object = {
   adminAllowedCidrs: adminAllowedCidrs
   adminRateLimitPerMinute: adminRateLimitPerMinute
   rateLimitPerMinute: rateLimitPerMinute
+  modelListRateLimitPerMinute: modelListRateLimitPerMinute
   backendAddresses: backendAddresses
   subnetPrefix: subnetPrefix
 }

@@ -1,5 +1,6 @@
 import unittest
 import copy
+import re
 from datetime import datetime, timedelta, timezone
 
 from cryptography import x509
@@ -9,8 +10,21 @@ from cryptography.x509.oid import NameOID
 
 import yaml
 
-from scripts.private_ingress import certificate_material, ingress_settings, preserve_native_front_door_binding, render_ingress, source_ranges
+from scripts.private_ingress import NATIVE_API_PATHS, certificate_material, ingress_settings, native_api_rule, preserve_native_front_door_binding, render_ingress, source_ranges
 from tests.test_customer_migration import customer_config
+
+
+def traefik_matches(rule, method, path, host, headers=None):
+    """Evaluate the Host/Method/Path/HeaderRegexp subset of a Traefik v3 rule for one request."""
+    headers = {key.lower(): value for key, value in (headers or {}).items()}
+    expression = re.sub(r"Host\(`([^`]*)`\)", lambda item: repr(item[1] == host), rule)
+    expression = re.sub(r"Method\(`([^`]*)`\)", lambda item: repr(item[1] == method), expression)
+    expression = re.sub(r"Path\(`([^`]*)`\)", lambda item: repr(item[1] == path), expression)
+    expression = re.sub(r"HeaderRegexp\(`([^`]*)`,\s*`([^`]*)`\)", lambda item: repr(re.search(item[2], headers.get(item[1].lower(), "")) is not None), expression)
+    expression = expression.replace("&&", " and ").replace("||", " or ")
+    if re.fullmatch(r"[\sA-Za-z()]*", expression) is None or set(re.findall(r"[A-Za-z]+", expression)) - {"True", "False", "and", "or"}:
+        raise AssertionError("Unsupported Traefik rule: " + rule)
+    return eval(expression)
 
 
 class PrivateIngressTests(unittest.TestCase):
@@ -57,11 +71,33 @@ class PrivateIngressTests(unittest.TestCase):
                 for path in ("/chat/completions", "/v1/chat/completions", "/responses", "/v1/responses", "/embeddings", "/v1/embeddings"):
                     self.assertIn(f"Path(`{path}`)", rule)
                 self.assertIn("Method(`POST`)", rule)
+                self.assertIn("(Method(`GET`) && (Path(`/models`) || Path(`/v1/models`)))", rule)
                 self.assertEqual(dynamic["http"]["middlewares"]["api-health-path"]["replacePath"]["path"], "/health/readiness")
                 self.assertIn("Path(`/readyz`)", dynamic["http"]["routers"]["api-health"]["rule"])
             else:
                 self.assertEqual(set(dynamic["http"]["routers"]), {"admin", "admin-health"})
                 self.assertEqual(dynamic["http"]["middlewares"]["admin-health-path"]["replacePath"]["path"], "/health/readiness")
+
+    def test_native_api_rule_admits_model_list_get_only(self):
+        host, edge = "llm-api.customer.invalid", "11111111-1111-4111-8111-111111111111"
+        rule = native_api_rule(host, edge)
+        bound = {"X-Azure-FDID": edge}
+        self.assertEqual(sorted(NATIVE_API_PATHS), sorted(["/chat/completions", "/v1/chat/completions", "/responses", "/v1/responses", "/embeddings", "/v1/embeddings", "/models", "/v1/models"]))
+        for path in ("/models", "/v1/models"):
+            self.assertTrue(traefik_matches(rule, "GET", path, host, bound))
+            self.assertFalse(traefik_matches(rule, "GET", path, host))
+            self.assertFalse(traefik_matches(rule, "GET", path, "llm-admin.customer.invalid", bound))
+            for method in ("POST", "HEAD", "PUT", "DELETE", "OPTIONS", "PATCH"):
+                self.assertFalse(traefik_matches(rule, method, path, host, bound), (method, path))
+        for path in ("/v1/models/coding", "/models/coding", "/v1/models/", "/model/info", "/v1/model/info", "/key/generate", "/ui/"):
+            for method in ("GET", "POST"):
+                self.assertFalse(traefik_matches(rule, method, path, host, bound), (method, path))
+        for path in ("/v1/chat/completions", "/v1/responses", "/embeddings"):
+            self.assertTrue(traefik_matches(rule, "POST", path, host, bound))
+            self.assertFalse(traefik_matches(rule, "GET", path, host, bound))
+        handshake = {**bound, "Upgrade": "websocket", "Connection": "Upgrade"}
+        self.assertTrue(traefik_matches(rule, "GET", "/v1/responses", host, handshake))
+        self.assertFalse(traefik_matches(rule, "GET", "/v1/chat/completions", host, handshake))
 
     def test_each_plane_allows_only_configured_sources_and_private_link_nat_subnet(self):
         configured = ["10.60.0.0/16"]

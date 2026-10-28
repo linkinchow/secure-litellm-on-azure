@@ -234,6 +234,20 @@ def availability_zones(config):
     return sorted(zones)
 
 
+def platform_maintenance(config):
+    platform = config["parameters"].get("platform", {})
+    aks, data = platform.get("stage4Aks", {}), platform.get("stage5Data", {})
+    require(aks.get("upgradeChannel", "patch") in {"none", "patch", "stable", "rapid", "node-image"}, "stage4Aks.upgradeChannel must be none, patch, stable, rapid or node-image")
+    require(aks.get("nodeOSUpgradeChannel", "NodeImage") in {"None", "Unmanaged", "NodeImage", "SecurityPatch"}, "stage4Aks.nodeOSUpgradeChannel must be None, Unmanaged, NodeImage or SecurityPatch")
+    require(data.get("redisHighAvailability", "Enabled") in {"Enabled", "Disabled"}, "stage5Data.redisHighAvailability must be Enabled or Disabled")
+    for connection in platform.get("azureOpenAIConnections", []):
+        require(connection.get("privateEndpoint", True) in {True, False}, "azureOpenAIConnections privateEndpoint must be true or false")
+        if connection.get("privateEndpoint", True) is False:
+            # The Firewall allowlist and DNS fallback are derived from the default account host.
+            require(connection.get("endpoint", "https://" + connection["accountName"] + ".openai.azure.com").rstrip("/") == "https://" + connection["accountName"] + ".openai.azure.com",
+                    "A model connection without a private endpoint must use the default https://<account>.openai.azure.com endpoint")
+
+
 def spread_across_zones(pod, zones, selector=None):
     if not zones:
         return pod
@@ -327,6 +341,7 @@ def validate_config(config, environment):
         require(isinstance(parameters, dict) and not set(parameters) - COMPONENTS[component][2], "Unknown or reserved component parameter")
         require(mode != "greenfield" or component not in {"monitoring", "legacy-logging"}, "Legacy monitoring components do not apply to greenfield")
     availability_zones(config)
+    platform_maintenance(config)
     edge = config["parameters"].get("edge")
     if edge is not None and "adminAllowedCidrs" in edge and configured(edge["adminAllowedCidrs"]):
         admin_source_cidrs(edge["adminAllowedCidrs"])

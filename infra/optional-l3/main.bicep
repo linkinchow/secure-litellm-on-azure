@@ -9,9 +9,10 @@ param aksOidcIssuer string
 param administratorPrincipalId string
 @allowed(['User', 'Group'])
 param administratorPrincipalType string = 'Group'
-@minLength(3)
-@description('Customer notification email resolved from CFG ownerEmail, or an approved signed-in user mail.')
-param alertEmail string
+@description('Create the action group and the two log alerts. Off leaves L3 health to dashboards and manual checks.')
+param enableAlerts bool = true
+@description('Customer notification email resolved from CFG ownerEmail, or an approved signed-in user mail; required when enableAlerts is true.')
+param alertEmail string = ''
 @description('Use the existing scope already linked to this VNet; empty creates a new scope.')
 param existingMonitorScopeName string = ''
 @description('Only the reviewed missing zone names; never adopt another RG zone without approval.')
@@ -23,7 +24,7 @@ param workspaceAlreadyLinkedToMonitorScope bool = false
 param zoneRedundant bool = false
 
 var prefix = 'l3-${storageAccountName}'
-resource actionGroup 'Microsoft.Insights/actionGroups@2023-01-01' = {
+resource actionGroup 'Microsoft.Insights/actionGroups@2023-01-01' = if (enableAlerts) {
   name: '${prefix}-alerts'
   location: 'global'
   properties: {
@@ -283,7 +284,7 @@ resource monitorDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@202
   }
   dependsOn: [createdZones]
 }
-resource alerts 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = [for item in [
+resource alerts 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = [for item in (enableAlerts ? [
   {
     name: 'delivery-risk'
     query: 'L3Audit_CL | where TimeGenerated > ago(10m) | where isnotempty(tostring(Record.risk))'
@@ -292,7 +293,7 @@ resource alerts 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = [for item 
     name: 'heartbeat-missing'
     query: 'L3Audit_CL | where TimeGenerated > ago(10m) | where tostring(Record.path) == "/l3/health" | summarize n=count() | where n == 0'
   }
-]: {
+] : []): {
   name: '${prefix}-${item.name}'
   location: location
   properties: {
@@ -325,4 +326,4 @@ output deploymentSettings object = {
 }
 output workspaceId string = workspace.properties.customerId
 output privateEndpoints array = [blobPe.id, monitorPe.id]
-output alertActionGroupId string = actionGroup.id
+output alertActionGroupId string = enableAlerts ? actionGroup.id : ''

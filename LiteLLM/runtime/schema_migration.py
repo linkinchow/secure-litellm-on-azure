@@ -23,6 +23,9 @@ VIEWS_SHA256 = "6118f5eba52c8e3a56accc8973b80b44d53e87f90e7d578ca14be0e8b39c66ad
 SUPPORTED_SOURCE_HISTORIES = {
     "0a730273fd745521b36008b01816142d92294792667a6a5c046147e0821e0dbb": 141,
     "3263a9bd2b458c8e78fa35af9378a21500bb11b7fdfdff74970a5a2bd3973958": 141,
+    # limx legacy (litellm-mi-aks, 2026-10-28 read-only export): the same 141 rows as upstream v1.95.0, but upgraded in
+    # three steps, so 20260630120000_add_token_exchange_to_mcp_servers was applied after 20260630190000.
+    "f88b79a6d4fc17bc7f199d691c629744c43811e43538de39926fa4ba67a89871": 141,
 }
 OPERATOR_MANAGED_SPEND_LOG_INDEXES = {
     "LiteLLM_SpendLogs_litellm_call_id_idx": ("litellm_call_id",),

@@ -259,3 +259,6 @@ temp/
 
 # Local database backups
 *.dump
+
+# Local scratch files (test scripts, exports, research); never committed
+/tmp/

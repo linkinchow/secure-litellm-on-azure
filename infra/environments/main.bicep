@@ -25,6 +25,8 @@ type stage4AksConfiguration = {
   userNodeVmSize: string
   userNodeCount: int
   availabilityZones: string[]?
+  upgradeChannel: ('none' | 'patch' | 'stable' | 'rapid' | 'node-image')?
+  nodeOSUpgradeChannel: ('None' | 'Unmanaged' | 'NodeImage' | 'SecurityPatch')?
 }
 
 type azureOpenAIConnection = {
@@ -34,6 +36,8 @@ type azureOpenAIConnection = {
   resourceGroupName: string
   accountName: string
   endpoint: string?
+  @description('False reaches the account over its public endpoint (Firewall FQDN allowlist plus managed identity) instead of a private endpoint.')
+  privateEndpoint: bool?
 }
 
 type stage5DataConfiguration = {
@@ -44,6 +48,7 @@ type stage5DataConfiguration = {
   postgresqlEntraAdministratorPrincipalName: string
   postgresqlEntraAdministratorPrincipalType: ('Group' | 'ServicePrincipal' | 'User')
   redisSkuName: string
+  redisHighAvailability: ('Enabled' | 'Disabled')?
 }
 
 @description('Deployment environment.')
@@ -161,6 +166,8 @@ param approvedHttpsFqdns array = [
   'acs-mirror.azureedge.net'
 ]
 
+var publicModelHosts = map(filter(azureOpenAIConnections, connection => !(connection.?privateEndpoint ?? true)), connection => '${connection.accountName}.openai.azure.com')
+
 var azureEnvironmentHttpsFqdns = [
   replace(replace(environment().resourceManager, 'https://', ''), '/', '')
   replace(replace(environment().authentication.loginEndpoint, 'https://', ''), '/', '')
@@ -206,6 +213,7 @@ module privateDns '../modules/private-dns/main.bicep' = if (deployStage4) {
     createManagedRedisZone: createStage5ManagedRedisPrivateDnsZone
     runnerVirtualNetworkId: stage5RunnerVirtualNetworkId
     configureRunnerLinks: manageStage5RunnerDnsLinks
+    azureOpenAIFallbackToInternet: !empty(publicModelHosts)
     tags: tags
   }
 }
@@ -222,7 +230,7 @@ module firewall '../modules/firewall-egress/main.bicep' = if (deployStage4) {
       stage4Network.userSubnetPrefix
       stage4Network.ingressSubnetPrefix
     ]
-    approvedHttpsFqdns: union(approvedHttpsFqdns, azureEnvironmentHttpsFqdns)
+    approvedHttpsFqdns: union(approvedHttpsFqdns, azureEnvironmentHttpsFqdns, publicModelHosts)
     logAnalyticsWorkspaceId: logAnalyticsWorkspace.id
     tags: tags
   }
@@ -261,6 +269,8 @@ module privateAks '../modules/private-aks/main.bicep' = if (deployStage4) {
     userNodeVmSize: stage4Aks.userNodeVmSize
     userNodeCount: stage4Aks.userNodeCount
     availabilityZones: stage4Aks.?availabilityZones ?? []
+    upgradeChannel: stage4Aks.?upgradeChannel ?? 'patch'
+    nodeOSUpgradeChannel: stage4Aks.?nodeOSUpgradeChannel ?? 'NodeImage'
     podCidr: stage4Network.podCidr
     serviceCidr: stage4Network.serviceCidr
     dnsServiceIp: stage4Network.dnsServiceIp
@@ -309,7 +319,7 @@ module acrPullRole '../modules/acr-pull-role/main.bicep' = if (deployStage4 && d
   }
 }
 
-module azureOpenAIPrivateEndpoints '../modules/aoai-private-endpoint/main.bicep' = [for connection in azureOpenAIConnections: if (deployStage4) {
+module azureOpenAIPrivateEndpoints '../modules/aoai-private-endpoint/main.bicep' = [for connection in azureOpenAIConnections: if (deployStage4 && (connection.?privateEndpoint ?? true)) {
   params: {
     location: location
     virtualNetworkName: stage4Network.virtualNetworkName
@@ -367,6 +377,7 @@ module managedRedis '../modules/managed-redis/main.bicep' = if (stage5Enabled) {
     principalSourceResourceId: stage4RoleAssignmentNaming == 'resource-id' ? resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', 'id-litellm-workload-${environmentName}') : ''
     logAnalyticsWorkspaceId: logAnalyticsWorkspace.id
     skuName: stage5Data.redisSkuName
+    highAvailability: stage5Data.?redisHighAvailability ?? 'Enabled'
     tags: tags
   }
 }

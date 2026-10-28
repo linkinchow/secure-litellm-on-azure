@@ -18,6 +18,13 @@ param logAnalyticsWorkspaceId string
 @description('Azure Managed Redis SKU.')
 param skuName string = 'Balanced_B0'
 
+@description('Managed Redis high availability; Disabled has no SLA and is a customer-approved cost trade-off.')
+@allowed([
+  'Enabled'
+  'Disabled'
+])
+param highAvailability string = 'Enabled'
+
 @description('Resource tags.')
 param tags object = {}
 
@@ -33,7 +40,7 @@ resource cluster 'Microsoft.Cache/redisEnterprise@2025-07-01' = {
   }
   properties: {
     encryption: {}
-    highAvailability: 'Enabled'
+    highAvailability: highAvailability
     minimumTlsVersion: '1.2'
     publicNetworkAccess: 'Disabled'
   }

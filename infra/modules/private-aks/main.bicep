@@ -46,6 +46,25 @@ param serviceCidr string = '10.31.0.0/16'
 @description('Kubernetes DNS service IP inside serviceCidr.')
 param dnsServiceIp string = '10.31.0.10'
 
+@description('Kubernetes auto-upgrade channel; none leaves version upgrades to an approved change.')
+@allowed([
+  'none'
+  'patch'
+  'stable'
+  'rapid'
+  'node-image'
+])
+param upgradeChannel string = 'patch'
+
+@description('Node OS image auto-upgrade channel; None leaves node image upgrades to an approved change.')
+@allowed([
+  'None'
+  'Unmanaged'
+  'NodeImage'
+  'SecurityPatch'
+])
+param nodeOSUpgradeChannel string = 'NodeImage'
+
 @description('Resource tags.')
 param tags object = {}
 
@@ -108,8 +127,8 @@ resource cluster 'Microsoft.ContainerService/managedClusters@2025-01-01' = {
       privateDNSZone: 'system'
     }
     autoUpgradeProfile: {
-      nodeOSUpgradeChannel: 'NodeImage'
-      upgradeChannel: 'patch'
+      nodeOSUpgradeChannel: nodeOSUpgradeChannel
+      upgradeChannel: upgradeChannel
     }
     disableLocalAccounts: true
     dnsPrefix: dnsPrefix

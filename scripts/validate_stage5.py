@@ -36,7 +36,9 @@ def validate_infrastructure() -> None:
     redis = read(MODULES / "managed-redis/main.bicep")
     assert "Balanced_B0" in redis
     assert "minimumTlsVersion: '1.2'" in redis
-    assert "highAvailability: 'Enabled'" in redis
+    # HA stays the default; Disabled is only an explicit, customer-approved cost trade-off.
+    assert "param highAvailability string = 'Enabled'" in redis and "highAvailability: highAvailability" in redis
+    assert "highAvailability: stage5Data.?redisHighAvailability ?? 'Enabled'" in read(ROOT / "infra/environments/main.bicep")
     assert "accessKeysAuthentication: 'Disabled'" in redis
     assert "clusteringPolicy: 'NoCluster'" in redis
     assert "accessPolicyAssignments@2025-07-01" in redis

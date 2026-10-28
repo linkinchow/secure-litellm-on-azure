@@ -47,6 +47,9 @@ resource acrLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-
   }
 }
 
+@description('Resolve Azure OpenAI names missing from the private zone over public DNS; needed when some accounts are reached without a private endpoint.')
+param azureOpenAIFallbackToInternet bool = false
+
 resource azureOpenAIZone 'Microsoft.Network/privateDnsZones@2024-06-01' = {
   name: 'privatelink.openai.azure.com'
   location: 'global'
@@ -59,6 +62,7 @@ resource azureOpenAILink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@
   location: 'global'
   properties: {
     registrationEnabled: false
+    resolutionPolicy: azureOpenAIFallbackToInternet ? 'NxDomainRedirect' : 'Default'
     virtualNetwork: {
       id: virtualNetwork.id
     }

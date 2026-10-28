@@ -24,7 +24,11 @@ class OptionalL3Tests(unittest.TestCase):
         self.assertIn("emailAddress: alertEmail", template)
         self.assertIn("useCommonAlertSchema: true", template)
         self.assertIn("actions: { actionGroups: [actionGroup.id] }", template)
-        self.assertIn("output alertActionGroupId string = actionGroup.id", template)
+        self.assertIn("output alertActionGroupId string = enableAlerts ? actionGroup.id : ''", template)
+        # Alerts stay on by default; a customer can opt out without leaving an orphaned action group behind.
+        self.assertIn("param enableAlerts bool = true", template)
+        self.assertIn("resource actionGroup 'Microsoft.Insights/actionGroups@2023-01-01' = if (enableAlerts)", template)
+        self.assertIn("[for item in (enableAlerts ? [", template)
         self.assertNotIn("param alertActionGroupId", template)
         self.assertNotIn("wangpeter@", template)
 

@@ -531,9 +531,28 @@ origin核对二者，允许默认443端口和根路径`/`的等价写法，不�
 若提示`Enable requires top-level l3Audit.enabled=true`，说明当前CFG尚未按5.1节启用，
 PG开关没有改变；完成合并后重新运行Stage4 plan/execute和协议验收，再运行PG激活计划，
 不复用之前基础版Stage4的哈希。
-执行仅创建内容寻址的不可变配置，再CAS替换该配置卷引用并等待rollout。
+执行仅创建内容寻址的不可变配置，再替换该配置卷引用并等待rollout。
 只把 `store_prompts_in_spend_logs` 变为false，保留 `disable_spend_logs=false`、模型、
 预算、身份、费用日志及其他设置；不删除旧配置。冲突/漂移时重新计划，不强制接管。
+
+LiteLLM Deployment由Stage6/8以server-side apply、字段管理者`llmgw-migration`维护。
+激活工具不再用`kubectl patch`（旧版会让`kubectl-patch`持有配置卷引用，之后Stage6/8
+apply报`conflict with "kubectl-patch"`），而是：
+- 用`kubectl get --show-managed-fields`读取Deployment，按`llmgw-migration`的Apply
+  字段集从现状还原该管理者原本apply的配置，只改配置卷的`configMap.name`，再以同一
+  管理者server-side apply。不能只提交仅含volumes的局部Deployment：SSA会把该管理者
+  未再提交的字段（容器、镜像等）视为放弃并删除。
+- 计划绑定该apply文档；执行时文档、模板、UID或ConfigMap有变化即要求重新计划。
+  apply携带原UID和resourceVersion作为并发前置条件。
+- 先`--dry-run=server`：返回的spec必须与“现状仅替换配置卷引用”完全一致，标签/注解
+  不变，否则报`Server dry-run changes more than the runtime configuration reference`，
+  且尚未创建ConfigMap、未改Deployment。
+- 只有该引用当前被旧版留下的`kubectl-patch`（Update）持有时才加`--force-conflicts`，
+  将这一字段交还`llmgw-migration`；其他管理者持有时阻断并提示人工核查。缺少
+  `llmgw-migration`的Apply记录或其不拥有该配置卷时也阻断，先按平台流程重跑Stage6。
+- 旧版激活过的环境，用新版本对同一模式重新plan/execute一次即可交还所有权；
+  若算出的配置名与当前相同，spec无变化，不触发滚动。之后Stage6/8 apply不再冲突，并按CFG重新渲染该引用
+  （CFG启用`l3Audit`时其渲染同样关闭PG正文）。
 现有PG正文不会被该开关追溯删除，仍按原清理/备份策略处理。
 
 **所有激活步骤完成后**刷新Stage9绑定回执及发布报告：

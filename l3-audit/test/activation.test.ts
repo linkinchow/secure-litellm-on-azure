@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, copyFile, chmod, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, copyFile, chmod, readFile, writeFile, rm, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { sha } from '../src/record.js';
@@ -25,15 +25,24 @@ test('AKS API normalization equates default HTTPS port and root only, not differ
   const other = origin.replace('synthetic.id', 'different.id');
   assert.notEqual(privateApiOrigin(other, 'aks-test'), privateApiOrigin(origin, 'aks-test'));
 });
-test('real activation CLI validates approval, blocks stale state and patches only runtime config volume', async () => {
+test('real activation CLI validates approval, blocks stale state and re-applies only the runtime config volume as the platform', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'l3-activation-'));
   const fake = join(directory, 'kubectl'), statePath = join(directory, 'state.json');
   const cfg = join(directory, 'customer.json'), plan = join(directory, 'plan.json');
   const expected = 'https://aks-test-synthetic.id.privatelink.westus3.azmk8s.io';
   const image = 'synthetic.azurecr.io/backend@sha256:' + 'a'.repeat(64);
   const state = {
-    server: expected + ':443', applies: 0, patches: 0,
-    deployment: { metadata: { name: 'litellm', namespace: 'litellm', uid: 'original-uid' },
+    server: expected + ':443', applies: 0, deploymentApplies: 0, dryRunDrift: false,
+    deployment: { metadata: { name: 'litellm', namespace: 'litellm', uid: 'original-uid', resourceVersion: '41',
+      managedFields: [
+        { manager: 'llmgw-migration', operation: 'Apply', apiVersion: 'apps/v1', fieldsType: 'FieldsV1', fieldsV1: {
+          'f:spec': { 'f:template': { 'f:spec': {
+            'f:containers': { 'k:{"name":"litellm"}': { '.': {}, 'f:name': {}, 'f:image': {} } },
+            'f:volumes': { 'k:{"name":"config"}': { '.': {}, 'f:name': {}, 'f:configMap': { 'f:name': {} } } } } } } } },
+        // An earlier activation release patched the volume reference with kubectl's default patch manager.
+        { manager: 'kubectl-patch', operation: 'Update', apiVersion: 'apps/v1', fieldsType: 'FieldsV1', fieldsV1: {
+          'f:spec': { 'f:template': { 'f:spec': { 'f:volumes': { 'k:{"name":"config"}': {
+            'f:configMap': { 'f:name': {} } } } } } } } }] },
       spec: { template: { metadata: { annotations: { preserved: 'yes' } },
         spec: { containers: [{ name: 'litellm', image }],
           volumes: [{ name: 'config', configMap: { name: 'litellm-config-old' } }] } } } },
@@ -80,11 +89,25 @@ test('real activation CLI validates approval, blocks stale state and patches onl
     await assert.rejects(execute(process.execPath, [...base, 'execute', ...rest, approved], { env }));
     assert.equal(JSON.parse(await readFile(statePath, 'utf8')).applies, 0);
     state.deployment.metadata.uid = 'original-uid';
+    state.dryRunDrift = true;
+    await writeFile(statePath, JSON.stringify(state));
+    await assert.rejects(execute(process.execPath, [...base, 'execute', ...rest, approved], { env }), error =>
+      error instanceof Error && error.message.includes('Server dry-run changes more than the runtime configuration reference'));
+    const drifted = JSON.parse(await readFile(statePath, 'utf8'));
+    assert.equal(drifted.applies, 0); assert.equal(drifted.deploymentApplies, 0);
+    await unlink(plan + '.deployment.json');
+    state.dryRunDrift = false;
     await writeFile(statePath, JSON.stringify(state));
     const executed = await execute(process.execPath, [...base, 'execute', ...rest, approved], { env });
     assert.equal(JSON.parse(executed.stdout).rolloutVerified, true);
     const after = JSON.parse(await readFile(statePath, 'utf8'));
-    assert.equal(after.applies, 1); assert.equal(after.patches, 1);
+    assert.equal(after.applies, 1); assert.equal(after.deploymentApplies, 1);
+    assert.equal(after.deployment.spec.template.spec.volumes[0].configMap.name, after.configMap.metadata.name);
+    assert.deepEqual(after.deployment.metadata.managedFields.map((entry: { manager: string }) => entry.manager), ['llmgw-migration']);
+    const applied = JSON.parse(await readFile(plan + '.deployment.json', 'utf8'));
+    assert.deepEqual(applied.metadata, { name: 'litellm', namespace: 'litellm', uid: 'original-uid', resourceVersion: '41' });
+    assert.deepEqual(applied.spec, { template: { spec: { containers: [{ name: 'litellm', image }],
+      volumes: [{ name: 'config', configMap: { name: after.configMap.metadata.name } }] } } });
     assert.equal(after.deployment.spec.template.metadata.annotations.preserved, 'yes');
     assert.equal(after.deployment.spec.template.spec.containers[0].image, image);
     assert.equal(yamlParse(after.configMap.data['config.yaml']).general_settings.store_prompts_in_spend_logs, false);

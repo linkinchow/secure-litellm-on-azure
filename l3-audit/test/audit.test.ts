@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import http from 'node:http';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { Capture, CONTENT_LIMIT, MEMORY_LIMIT, parse, type RecordEnvelope } from '../src/record.js';
+import { Capture, CONTENT_LIMIT, MEMORY_LIMIT, parse, type Index, type RecordEnvelope } from '../src/record.js';
 import { Queue, spoolFailureCode, type Delivery } from '../src/queue.js';
 import { FrameTap, Session } from '../src/websocket.js';
 import { createProxy } from '../src/proxy.js';
@@ -114,18 +114,36 @@ test('only real lost+found directory is ignored; unknown entries, links and queu
   assert.equal(spoolFailureCode(Object.assign(new Error('private-path'), { code: 'EACCES' })), 'EACCES');
   assert.equal(spoolFailureCode(new Error('private-path private-body')), 'spool-initialization-error');
 });
-test('disk budget rejects audit only; expired records produce gap index and are removed', async () => {
+test('disk budget rejects audit content only; dropped and expired records produce gap index and are removed', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'l3-expiry-'));
-  const gaps: string[] = [];
+  const indexes: Index[] = [];
   const sink: Delivery = { async content() { throw new Error('must not upload expired'); },
-    async index(value) { gaps.push(value.gap); } };
+    async index(value) { indexes.push(value); } };
   try {
-    const limited = new Queue(directory, sink, 1); await limited.init(); limited.enqueue(sample()); await limited.flush();
-    assert.equal(limited.counters.dropped, 1);
+    const limited = new Queue(directory, sink, 1); await limited.init();
+    const dropped = sample(); limited.enqueue(dropped); await limited.flush();
+    assert.equal(limited.counters.dropped, 1); assert.equal((await readdir(directory)).length, 0);
+    assert.equal(indexes.length, 1);
+    assert.deepEqual(indexes[0], { ...dropped.index, gap: 'enqueue-budget-exhausted', risk: 'enqueue-budget-exhausted',
+      contentSha256: '', blob: '' });
+    assert.ok(!JSON.stringify(indexes[0]).includes('synthetic-private-text'));
     const queue = new Queue(directory, sink, 1e6, 1); await queue.init(); queue.enqueue(sample()); await queue.flush();
     await queue.tick(Date.now() + 1000);
-    assert.deepEqual(gaps, ['delivery-expired']);
+    assert.deepEqual(indexes.map(value => value.gap), ['enqueue-budget-exhausted', 'delivery-expired']);
     assert.equal((await readdir(directory)).length, 0);
+  } finally { await rm(directory, { recursive: true }); }
+});
+test('gap index delivery for dropped records is bounded and failures are counted', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'l3-gap-bound-'));
+  let calls = 0;
+  const sink: Delivery = { async content() {}, index() { calls++; return new Promise<void>(() => {}); } };
+  try {
+    const queue = new Queue(directory, sink, 1); await queue.init();
+    for (let i = 0; i < 300; i++) queue.enqueue(sample());
+    assert.equal(calls, 256); assert.equal(queue.counters.dropped, 300); assert.equal(queue.counters.failures, 44);
+    const failing = new Queue(directory, { async content() {}, async index() { throw new Error('synthetic outage'); } });
+    failing.abandon(sample(), 'capture-without-spool'); await failing.flush();
+    assert.equal(failing.counters.dropped, 1); assert.equal(failing.counters.failures, 1);
   } finally { await rm(directory, { recursive: true }); }
 });
 test('corrupt spool record is quarantined rather than blocking all following records', async () => {
@@ -274,7 +292,9 @@ test('real WebSocket upgrade and frames traverse the transparent proxy unchanged
 });
 test('real HTTP inference remains successful when persistent audit queue is full', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'l3-fail-open-'));
-  const queue = new Queue(directory, { async content() { throw new Error('must not deliver'); }, async index() {} }, 1);
+  const indexes: Index[] = [];
+  const queue = new Queue(directory, { async content() { throw new Error('must not deliver'); },
+    async index(value) { indexes.push(value); } }, 1);
   await queue.init();
   const upstream = http.createServer((request, response) => { request.resume(); request.on('end', () => response.end('OK')); });
   const upstreamUrl = await listen(upstream);
@@ -283,6 +303,9 @@ test('real HTTP inference remains successful when persistent audit queue is full
     const response = await fetch(new URL('/v1/responses', url), { method: 'POST', body: '{"model":"coding"}' });
     assert.equal(response.status, 200); assert.equal(await response.text(), 'OK');
     assert.equal(queue.counters.dropped, 1); assert.equal((await readdir(directory)).length, 0);
+    await queue.flush();
+    assert.deepEqual(indexes.map(value => [value.status, value.outcome, value.gap, value.blob]),
+      [[200, 'completed', 'enqueue-budget-exhausted', '']]);
   } finally {
     proxy.closeAllConnections(); upstream.closeAllConnections();
     await Promise.all([new Promise<void>(r => proxy.close(() => r())), new Promise<void>(r => upstream.close(() => r()))]);

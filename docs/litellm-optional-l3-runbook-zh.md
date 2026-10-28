@@ -58,6 +58,7 @@ Admin Front Door / Admin 登录链路保持直连 LiteLLM，不经过新代理�
 | 重试 | 每5秒启动一次交付；先Blob再LAW；最长24小时后放弃并报告缺口 |
 | 持久化 | StatefulSet独立2Gi PVC；原文入队后fsync，故障恢复继续交付；不自动删除PVC |
 | 无法写盘/缓冲满/Azure故障 | **业务继续**，日志和心跳标记丢失/退化；不能宣称零丢失 |
+| 入队预算耗尽/写盘失败/spool未就绪 | 丢弃正文（不额外缓冲），但直接向LAW补发该调用的索引行：`gap`/`risk`为`enqueue-budget-exhausted`、`spool-write-failed`或`capture-without-spool`，`blob`为空；每Pod最多256个在途补发，超出或LAW不可用时只记失败计数和心跳退化 |
 
 进程在请求结束前、fsync前退出会丢失活动/待写记录；PVC/节点永久丢失也会丢数据。
 损坏的队列文件被隔离为`.corrupt`并告警，不阻塞后续记录；仍占用磁盘预算，

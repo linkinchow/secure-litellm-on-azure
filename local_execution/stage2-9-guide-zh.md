@@ -275,6 +275,7 @@ chmod 600 "local_execution/stage-REPLACE_STAGE-values.local.json"
 | Stage | 选项 | 作用 |
 | --- | --- | --- |
 | 2 | `single-validation-identity` | 配置单一local-operator UAMI；客户直接登录不选 |
+| 3 | `hub-egress` | 改用同区域Hub防火墙出口：加入`parameters.hub`、`stage4Network.egress.mode=hub`并删除spoke的`firewallSubnetPrefix`；默认dedicated不选，见[Stage4补充：可选Hub出口模式](#stage4补充可选hub出口模式) |
 | 4 | `automatic-api-certificate` | 启用自动API证书；手工导入不选 |
 | 5 | `database-admin-identity` | 使用独立database UAMI作为PG管理员；无管理员组时选择 |
 | 5 | `legacy-master-key-salt` | 旧环境无显式Salt且已批准复用Master Key兼容路径时选择 |
@@ -299,7 +300,7 @@ chmod 600 "local_execution/stage-REPLACE_STAGE-values.local.json"
 | Stage | 合并内容 |
 | --- | --- |
 | 2 | `governance`、原生`contentAudit`决策；可选UAMI认证profile |
-| 3 | `parameters.platform`的ACR、Workspace、目标网络和AKS |
+| 3 | `parameters.platform`的ACR、Workspace、目标网络和AKS；可选Hub出口 |
 | 4 | 模型账号、稳定角色命名、证书Vault、Runner目标DNS、私有入口及本地Cosign配置；自动证书为可选块 |
 | 5 | `stage5Data`、数据库初始化身份及Private DNS归属；仅migration加入Stage0备份引用/SHA256 |
 | 6 | `application`后端镜像digest和模型部署映射；可选原生认证模式/管理员用户名 |
@@ -458,7 +459,7 @@ execute会重新生成实时plan；代码、配置、云状态或发布报告变
 
 **执行身份：客户当前登录账号，或验证模式的operator UAMI。** 确认该主体在目标RG有部署权限；模型RG权限可在Stage4前补齐。
 
-1. 合并Stage3 `parameters.platform`；先确认CIDR不与Runner、旧环境或企业网络重叠：
+1. 合并Stage3 `parameters.platform`；先确认CIDR不与Runner、旧环境或企业网络重叠。Stage2决定改用Hub防火墙出口时，两条命令都追加`--option hub-egress`，并在Stage4前完成[可选Hub出口模式](#stage4补充可选hub出口模式)中的`stage0-hub`：
 
 ```bash
 .venv/bin/python -m local_execution.merge_config \
@@ -536,7 +537,7 @@ az acr show --subscription "$SUBSCRIPTION_ID" --resource-group "$TARGET_RG" \
   --values local_execution/stage-4-values.local.json
 ```
 
-确认模型账号、证书Vault、Runner VNet、入口证书地址和CIDR后，部署私网AKS和模型连接：
+确认模型账号、证书Vault、Runner VNet、入口证书地址和CIDR后，部署私网AKS和模型连接（hub出口须先完成`stage0-hub`，见[可选Hub出口模式](#stage4补充可选hub出口模式)）：
 
 ```bash
 .venv/bin/python -m local_execution \
@@ -825,6 +826,62 @@ printf 'api expected=%s actual=%s\nadmin expected=%s actual=%s\n' \
 - 查询到用户自建且目标为该AKS的Private Endpoint时，停止自动恢复，由网络Owner按客户变更流程删除并重建该PE；不要删除AKS管理的API PE，也不要误删ACR/Vault/PG/Redis PE。
 - 已进入Stage9时，还要复核Private Link Service、Front Door origin和实际客户端；入口前端地址或资源映射变化时重新plan受影响的Stage9步骤，不直接启流量。
 
+### Stage4补充：可选Hub出口模式
+
+缺省`stage4Network.egress`不存在，等同`{"mode":"dedicated"}`：Stage4 platform在目标VNet内建Azure Firewall，本节全部跳过。Stage2决定由同区域Hub防火墙集中出口时，Stage3合并已用`--option hub-egress`写入`parameters.hub`和`egress.mode=hub`，并删除了`stage4Network.firewallSubnetPrefix`。
+
+**地址规划（参考，须客户批准并与企业网络核对）：**
+
+| 网络 | 前缀 | 子网 |
+| --- | --- | --- |
+| Hub VNet | `/24`，如`10.40.0.0/24` | `AzureFirewallSubnet` `/26`（本期创建）；预留`AzureFirewallManagementSubnet` `/26`、`AzureBastionSubnet` `/26`、`GatewaySubnet` `/27`（只登记在`reservedPrefixes`做重叠校验，不创建） |
+| Spoke（目标VNet） | `/21`，如`10.30.0.0/21` | hub模式不需要spoke的`AzureFirewallSubnet`；system `/24`、user `/23`、入口`/24`、Private Endpoint `/24`，可另留Application Gateway `/24`；按`/21`重排时PE子网（Stage0创建）也须落在`/21`内 |
+| Pod/Service CIDR | 如`10.244.0.0/16`、`10.31.0.0/16` | 不得与Hub或任何Peering网络重叠 |
+
+配置校验会拒绝Hub与目标VNet、各子网、Pod/Service CIDR、Application Gateway子网重叠，`AzureFirewallSubnet`不是`/26`，或预留子网大小、位置不符。
+
+**执行顺序：**
+
+1. IAM管理员给执行身份补Hub权限（Stage4窗口内）：`stage0-hub`需要订阅级创建RG的权限（如订阅Contributor或等效自定义角色）以及对诊断Workspace的Log Analytics Contributor；`stage4-platform`需要对Hub RG有Network Contributor（写hub→spoke Peering、规则集合组和嵌套部署，并对Hub VNet执行`peer/action`）。客户若由网络团队统一管理Hub，可只授予这些动作的自定义角色。
+2. 部署Hub（订阅级，只允许改Hub RG及其中资源；详细说明见[本地执行包S0-H01](README_ZH.md#s0-h01-可选区域hub防火墙)）：
+
+```bash
+.venv/bin/python -m local_execution \
+  --config local_execution/customer.json \
+  --step stage0-hub --operation plan
+
+.venv/bin/python -m local_execution \
+  --config local_execution/customer.json \
+  --step stage0-hub --operation execute \
+  --approved-plan-sha256 "REPLACE_STAGE0_HUB_PLAN_SHA256"
+```
+
+3. 按上文Stage4第1步plan/execute `stage4-platform`。hub模式下plan会：读取`llmgw-<env>-s0-hub-<8位哈希>`回执的防火墙私网IP、Policy和VNet并核对与`parameters.hub`一致（不得手填IP）；列出Hub Policy现有规则集合组，确认本spoke的优先级未被其他组占用；What-if只允许在目标RG外改hub→spoke Peering、本spoke规则集合组`litellm-<env>-<8位哈希>`及其嵌套部署。冲突时在`stage4Network.egress.ruleCollectionGroupPriority`（100–65000）指定其他值后重新plan。
+4. 只读核验：
+
+```bash
+HUB_RG="REPLACE_HUB_RESOURCE_GROUP"
+HUB_VNET="REPLACE_HUB_VNET"
+TARGET_VNET="REPLACE_TARGET_VNET"
+az network vnet peering list --subscription "$SUBSCRIPTION_ID" --resource-group "$TARGET_RG" \
+  --vnet-name "$TARGET_VNET" \
+  --query "[].{name:name,state:peeringState,sync:peeringSyncLevel,forwarded:allowForwardedTraffic}" --output table
+az network vnet peering list --subscription "$SUBSCRIPTION_ID" --resource-group "$HUB_RG" \
+  --vnet-name "$HUB_VNET" \
+  --query "[].{name:name,state:peeringState,sync:peeringSyncLevel}" --output table
+az network route-table route list --subscription "$SUBSCRIPTION_ID" --resource-group "$TARGET_RG" \
+  --route-table-name rt-litellm-aks-egress --query "[].{prefix:addressPrefix,nextHop:nextHopIpAddress}" --output table
+```
+
+通过条件：两侧`llmgw-<env>-*`Peering为`Connected`且`FullyInSync`；默认路由下一跳等于回执中的Hub防火墙私网IP；目标RG没有新建Azure Firewall。Hub或spoke地址空间以后变化时，需在两侧执行`az network vnet peering sync`并重新plan。
+
+**注意：**
+
+- 规则内容与dedicated完全相同（system/user/入口子网→批准FQDN、ARM/登录端点及`privateEndpoint=false`模型账号的HTTPS；Azure DNS与NTP网络规则）；放行新FQDN仍只改`approvedHttpsFqdns`后重新plan本环境platform，不改其他spoke的规则集合组。
+- 多个环境同时改同一Hub Policy会互相等待或失败（Policy更新期间防火墙处于Updating）；同一Hub的各环境platform execute须串行。
+- 已有dedicated环境改为hub时，原spoke防火墙、Policy、公网IP和`AzureFirewallSubnet`不会被自动删除，出口公网IP改变；先更新模型账号白名单（见方案B），切换验证后再另行审批清理旧资源。
+- 多区域部署时每个区域一个Hub，环境只能使用同区域Hub；需要统一基线时用Azure Firewall Manager的父/子Policy（本模板创建独立Policy，父子关系另行变更）。执行主机（Runner）和Bastion本期仍在各自管理VNet，不迁入Hub。
+
 ### Stage4补充：方案B——旧LiteLLM模型导入与模型账号公网白名单（可选）
 
 适用于模型账号不建私有端点（`azureOpenAIConnections[].privateEndpoint=false`）的场景：新环境经Azure Firewall公网出口、以托管身份访问`https://<account>.openai.azure.com`，账号侧用IP白名单限制来源并关闭API Key。两个工具都在执行主机本地运行：导入工具完全离线，不调用Azure；网络工具的plan只读，只有`--execute`加已审核的`planSha256`才写Azure。
@@ -870,6 +927,8 @@ FW_IP="$(az network public-ip show --subscription "$SUBSCRIPTION_ID" --resource-
   --accounts-file temp/legacy-import/out/model-fragments.json \
   --egress-ip "$FW_IP" --output-dir temp/model-network
 ```
+
+hub出口模式下目标RG没有`pip-afw-litellm-*`，出口IP是Hub防火墙公网IP：取`stage0-hub`回执的`hub.firewallPublicIpAddress`（或`az network public-ip show --resource-group "$HUB_RG" --name "pip-afw-${HUB_VNET}"`）。该IP由使用同一Hub的所有环境共享，白名单因此不再区分环境。
 
 plan对每个账号执行`az resource show`（api-version 2024-10-01），输出`summary.json`（`planSha256`、逐账号update/keep、拒绝原因）、`plan.json`和私有的`rollback-snapshot.json`（原`publicNetworkAccess`、`networkAcls`、`disableLocalAuth`）。以下情况默认拒绝，审核后才可显式放行：已有私有端点连接（`--allow-private-endpoints`，不改动这些连接）、已有`virtualNetworkRules`（`--clear-virtual-network-rules`）、Deny下还有其他IP（补`--egress-ip`或`--remove-ip-rules`）、当前`publicNetworkAccess=Disabled`（`--enable-public-access`）。`--accounts-file`读取片段时只取`privateEndpoint=false`的连接，也可用`--account-id`逐个指定。
 

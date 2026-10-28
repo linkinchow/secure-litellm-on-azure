@@ -13,6 +13,7 @@
 - `modules/`：可复用Azure资源模块；
 - `environments/`：`dev/test/prod`环境入口与参数；
 - [backup-storage](backup-storage/README_ZH.md)：阶段0可选的私有备份存储及初始专用VNet；禁止接管共享VNet或在阶段4后重放bootstrap模板；
+- [hub](hub/main.bicep)：阶段0可选的区域Hub防火墙，配合Stage4 hub出口模式，见[可选Hub-Spoke出口](#可选hub-spoke出口)；
 - [monitoring](monitoring/README_ZH.md)：阶段1旧网关最小告警，需匹配客户实际日志与命名；
 - [audit-storage](audit-storage/main.bicep)：可选增强L3的独立CMK私有审计存储及分离权限，不用于原生Spend Logs正文；
 - [audit-detection](audit-detection/main.bicep)：默认禁用的检测规则及响应契约，非已运行的自动响应；
@@ -103,6 +104,31 @@ Private AKS创建模板保留控制面Diagnostic Settings和Defender，但不在
 7. 当前生产环境继续保留，不移除VMSS业务UAMI。
 
 本地运行`make validate-stage4`验证Stage3回归、CIDR、Bicep、参数和仓库安全策略。
+
+## 可选Hub-Spoke出口
+
+默认仍是**dedicated**：Stage4 platform在目标VNet内创建`AzureFirewallSubnet`、Firewall Premium、Policy、公网IP和规则集合组`litellm-egress-rules`，路由表把`0.0.0.0/0`指向该防火墙。未配置`parameters.hub`及`stage4Network.egress`的环境，模板编译结果的资源条件、参数取值和What-if都不变。
+
+客户已有或计划区域Hub时，可改为**hub**模式，由同区域一个Hub防火墙集中出口：
+
+| 组件 | 模板 | 内容 |
+| --- | --- | --- |
+| Stage0 `hub` | [hub](hub/main.bicep)（订阅级）+ [modules/hub-network](modules/hub-network/main.bicep) | 创建并拥有专用Hub RG；Hub VNet（只含`AzureFirewallSubnet`，/26）、Firewall Premium、Policy Premium（DNS代理、IDPS与威胁情报Alert，不含任何workload规则）、Standard公网IP、防火墙诊断写入现有Log Analytics Workspace |
+| Stage4 platform（`egress.mode=hub`） | [environments](environments/main.bicep) + [modules/hub-egress](modules/hub-egress/main.bicep) | 不部署spoke的`AzureFirewallSubnet`和`firewall-egress`；创建spoke→hub Peering；在Hub RG创建hub→spoke Peering和本spoke自己的规则集合组；路由表指向Hub防火墙私网IP |
+
+`parameters.hub`字段：`resourceGroupName`、`virtualNetworkName`（≤52字符）、`virtualNetworkAddressPrefix`、`firewallSubnetPrefix`（必须/26）、`logAnalyticsWorkspaceName`，可选`logAnalyticsWorkspaceResourceGroupName`（缺省为目标RG，即bootstrap创建的Workspace）和`reservedPrefixes`。防火墙、Policy和公网IP名称由VNet名派生为`afw-<hubVnet>`、`afwp-<hubVnet>`、`pip-afw-<hubVnet>`。模板不设置`zones`，与上文一致：在支持可用区的区域由平台自动跨区。
+
+`reservedPrefixes`只用于校验和记录地址规划，**本期不创建**这些子网：`AzureFirewallManagementSubnet`（/26）、`AzureBastionSubnet`（/26或更大）、`GatewaySubnet`（/27或更大）。配置校验要求全部Hub子网在Hub VNet内且互不重叠，Hub VNet为私网IPv4，并且不与目标VNet、Private Endpoint/AKS/入口/Application Gateway子网、Pod CIDR和Service CIDR重叠；`stage0-hub`的plan还只读核对执行主机VNet的地址空间。Hub RG必须独立于目标RG和旧RG。
+
+Hub模式要点：
+
+- **防火墙地址不手填**。Stage4 platform plan读取订阅级部署回执`llmgw-<env>-s0-hub-<8位哈希>`的`hub`输出，核对RG、VNet、Policy、区域和地址规划与`parameters.hub`一致、私网IP落在`AzureFirewallSubnet`内，再把它作为`stage4Hub`参数写入本次plan；回执缺失或漂移时plan失败。
+- **规则与dedicated完全相同**：来源为system/user/ingress子网，应用规则为`approvedHttpsFqdns`、ARM/登录端点及`privateEndpoint=false`模型账号主机；网络规则为`168.63.129.16:53`和NTP `123`。规则集合组名为`litellm-<env>-<8位哈希>`（哈希来自spoke与Hub VNet ID，同名环境不同RG也不冲突），优先级缺省在1000–9999内派生；plan会列出Hub Policy现有规则集合组，其他组已占用同一优先级时失败，可用`stage4Network.egress.ruleCollectionGroupPriority`（100–65000）显式指定。
+- **Peering**：spoke→hub与hub→spoke均`allowForwardedTraffic=true`、`useRemoteGateways=false`、`allowGatewayTransit=false`。AKS子网写入路由前先完成两侧Peering和规则，避免集群创建时出口不通。
+- **变更范围**：`hub`组件只能改Hub RG本身及其中资源；hub模式的platform在目标RG外只能改hub→spoke Peering、自己的规则集合组和对应的嵌套部署记录（另有既有的模型账号角色分配），并且不得在目标RG创建Azure Firewall、Firewall Policy或`AzureFirewallSubnet`。
+- **已有dedicated环境改为hub**：增量部署不会删除原spoke防火墙、Policy和`AzureFirewallSubnet`，路由切换后需另行审批清理；出口公网IP会变为Hub防火墙的IP，采用模型账号公网白名单（方案B）时须先把Hub IP加入白名单。Hub出口IP由所有spoke共享，白名单无法再区分环境。
+
+多区域：每个区域一个Hub，各区域环境使用同区域Hub（回执区域与`location`不一致会被拒绝）。需要全局统一基线时，可用Azure Firewall Manager把各区域Hub Policy设为同一父Policy的子Policy；本模板只创建独立Policy，父子关系需单独变更。执行主机（Runner）和Bastion本期仍留在各自管理VNet，不迁入Hub。
 
 ## 阶段5 Key Vault与托管数据服务
 

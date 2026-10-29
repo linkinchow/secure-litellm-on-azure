@@ -1,4 +1,8 @@
-"""Generate a live-verified native test/dev canary report without releasing traffic."""
+"""Generate a live-verified native canary report without releasing traffic.
+
+Without evidence only dev/test canaries qualify (their checks are live-gated). With --evidence-dir every check the
+release policy requires, including prod, must have a passing evidence file collected within the last seven days.
+"""
 
 import argparse
 import json
@@ -11,12 +15,26 @@ from scripts.api_protocol import MODEL_LIST_RATE_LIMIT
 from scripts.customer_migration import ROOT, MigrationError, approval_policy, private_write, require, stage_fingerprint
 from scripts.edge_binding import deployed_edge
 from scripts.migration_deploy import AzureCommands, deployment_name, resolve_origin
-from scripts.stage9_release import validate_release
+from scripts.stage9_release import release_checks, validate_release
 from scripts.workflow_diagnostics import diagnostic_exit
 
 
-def generate_report(config, settings, revision, change_ticket, approvers, azure):
-    require(config["environment"] in {"dev", "test"}, "Report generation is limited to dev/test canary")
+def attach_evidence(report, directory):
+    """Add one {passed, report, observedAt} entry per required check from <directory>/<check>.json."""
+    checks = {}
+    for name in sorted(release_checks(report)):
+        path = directory / f"{name}.json"
+        require(path.is_file() and not path.is_symlink(), f"Missing evidence file for {name}")
+        evidence = json.loads(path.read_text(encoding="utf-8"))
+        require(evidence.get("check") == name and evidence.get("passed") is True, f"Evidence did not pass: {name}")
+        reference = path.resolve()
+        checks[name] = {"passed": True, "report": str(reference.relative_to(ROOT.resolve()) if reference.is_relative_to(ROOT.resolve()) else reference),
+                        "observedAt": evidence.get("observedAt", "")}
+    report["checks"] = checks
+
+
+def generate_report(config, settings, revision, change_ticket, approvers, azure, evidence=None):
+    require(evidence is not None or config["environment"] in {"dev", "test"}, "Report generation without --evidence-dir is limited to dev/test canary")
     require(config.get("application", {}).get("authentication", {}).get("mode") == "native"
             and "contentAudit" in config, "Report generation requires native authentication and native audit")
     require(settings["features"]["allowTrafficRelease"] is True,
@@ -66,6 +84,8 @@ def generate_report(config, settings, revision, change_ticket, approvers, azure)
     mode, eligible = approval_policy(config)
     count = 1 if mode == "single-operator" else 2
     require(len(approvers) == count, "Approval count differs from the configured policy")
+    if evidence is not None:
+        attach_evidence(report, evidence)
     validate_release(report, required_approvers=count, eligible_approvers=eligible)
     return report
 
@@ -110,6 +130,7 @@ def main():
     parser.add_argument("--approved-by", action="append", required=True,
                         help="Actual approver object ID; repeat for each required approver")
     parser.add_argument("--replace", action="store_true", help="Back up and replace an existing report")
+    parser.add_argument("--evidence-dir", type=Path, help="Directory of <check>.json evidence files; required for prod")
     args = parser.parse_args()
     config, settings = load_config(args.config)
     target = report_path(settings)
@@ -117,8 +138,12 @@ def main():
     revision = reviewed_revision()
     directory = operation_root(ROOT / "temp/local-stage09", "stage9-release-report")
     authenticate_azure(config, settings, "deploy", directory)
+    evidence = None
+    if args.evidence_dir is not None:
+        evidence = (args.evidence_dir if args.evidence_dir.is_absolute() else ROOT / args.evidence_dir).resolve()
+        require(evidence.is_dir() and evidence.is_relative_to((ROOT / "temp").resolve()), "Evidence must be a directory under ignored temp/")
     report = generate_report(config, settings, revision, args.change_ticket, args.approved_by,
-                             AzureCommands(config, directory))
+                             AzureCommands(config, directory), evidence)
     require(reviewed_revision() == revision and load_config(args.config) == (config, settings),
             "Code or configuration changed during report generation; retry")
     install_report(report, target, directory, args.replace)

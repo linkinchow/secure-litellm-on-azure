@@ -95,6 +95,34 @@ class ReleaseReportTests(unittest.TestCase):
                     self.generate()
                 self.azure.scoped.return_value["parameters"][field]["value"] = actual
 
+    def test_prod_report_requires_passing_evidence_for_every_check(self):
+        self.config["environment"] = "prod"
+        with self.assertRaisesRegex(MigrationError, "evidence-dir"):
+            self.generate()
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory)
+            def run():
+                with patch("local_execution.release_report.resolve_origin", return_value=copy.deepcopy(self.config)),                         patch("local_execution.release_report.deployed_edge", return_value=self.live):
+                    return generate_report(self.config, self.settings, "a" * 40, "approved-test-change", [self.owner], self.azure, evidence)
+            with self.assertRaisesRegex(MigrationError, "Missing evidence file"):
+                run()
+            from scripts.stage9_release import release_checks
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            names = release_checks({"phase": "canary", "authenticationMode": "native", "auditMode": "native", "telemetryEnabled": False, "environmentName": "prod"})
+            self.assertIn("database_restore", names)
+            for name in names:
+                (evidence / f"{name}.json").write_text(json.dumps({"check": name, "passed": True, "observedAt": now}))
+            report = run()
+            self.assertEqual(set(report["checks"]), names)
+            self.assertTrue(all(item["passed"] and item["observedAt"] == now for item in report["checks"].values()))
+            (evidence / "database_restore.json").write_text(json.dumps({"check": "database_restore", "passed": False, "observedAt": now}))
+            with self.assertRaisesRegex(MigrationError, "did not pass: database_restore"):
+                run()
+            (evidence / "database_restore.json").write_text(json.dumps({"check": "database_restore", "passed": True, "observedAt": "2020-01-01T00:00:00+00:00"}))
+            with self.assertRaisesRegex(ValueError, "Expired"):
+                run()
+
     def test_requires_explicit_valid_approval(self):
         with self.assertRaises(ValueError):
             self.generate(ticket="REPLACE_TICKET")
@@ -153,7 +181,7 @@ class ReleaseReportTests(unittest.TestCase):
                 main()
             authenticate.assert_called_once_with(self.config, settings, "deploy", directory)
             generate.assert_called_once_with(self.config, settings, "a" * 40,
-                                              "approved-change", [self.owner], self.azure)
+                                              "approved-change", [self.owner], self.azure, None)
             summary = json.loads(output.call_args.args[0])
             self.assertFalse(summary["deploymentPerformed"])
             self.assertFalse(summary["trafficReleasePerformed"])

@@ -39,6 +39,7 @@ def validate_infrastructure() -> None:
     # HA stays the default; Disabled is only an explicit, customer-approved cost trade-off.
     assert "param highAvailability string = 'Enabled'" in redis and "highAvailability: highAvailability" in redis
     assert "highAvailability: stage5Data.?redisHighAvailability ?? 'Enabled'" in read(ROOT / "infra/environments/main.bicep")
+    assert "persistence: highAvailability == 'Enabled' ? {" in redis and "aofEnabled: false" in redis
     assert "accessKeysAuthentication: 'Disabled'" in redis
     assert "clusteringPolicy: 'NoCluster'" in redis
     assert "accessPolicyAssignments@2025-07-01" in redis

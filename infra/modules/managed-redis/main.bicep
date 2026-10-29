@@ -55,9 +55,13 @@ resource database 'Microsoft.Cache/redisEnterprise/databases@2025-07-01' = {
     clusteringPolicy: 'NoCluster'
     evictionPolicy: 'AllKeysLRU'
     modules: []
-    persistence: {
+    // Azure rejects persistence on a database without high availability.
+    persistence: highAvailability == 'Enabled' ? {
       aofEnabled: true
       aofFrequency: '1s'
+      rdbEnabled: false
+    } : {
+      aofEnabled: false
       rdbEnabled: false
     }
     port: 10000

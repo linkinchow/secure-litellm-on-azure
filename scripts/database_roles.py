@@ -81,11 +81,14 @@ def inspect_roles(connection, roles):
     return result
 
 
-def inspect_schema(connection):
+def inspect_schema(connection, administrator=None):
     with connection.cursor() as cursor:
         cursor.execute("SELECT pg_get_userbyid(namespace.nspowner) AS owner, pg_get_userbyid(database.datdba) AS database_owner, namespace.nspacl::text AS acl FROM pg_catalog.pg_namespace namespace JOIN pg_catalog.pg_database database ON database.datname = current_database() WHERE namespace.nspname = 'public'")
         schema = cursor.fetchone()
-        approved_owner = schema is not None and (schema["owner"] in {"pg_database_owner", "llmgw_migrator"} or schema["owner"] == schema["database_owner"] == "azure_pg_admin")
+        # ARM creates the database as azure_pg_admin before an Entra administrator exists; a database recreated
+        # afterwards (final cutover onto an emptied target) is owned by that configured administrator instead.
+        initial_owners = {"azure_pg_admin", administrator} if administrator else {"azure_pg_admin"}
+        approved_owner = schema is not None and (schema["owner"] in {"pg_database_owner", "llmgw_migrator"} or (schema["owner"] == "azure_pg_admin" and schema["database_owner"] in initial_owners))
         require(approved_owner, "Public schema must be owned by the Azure database owner or the managed migration role")
         cursor.execute("SELECT pg_get_userbyid(relowner) AS owner, count(*) AS count FROM pg_catalog.pg_class relation JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace WHERE namespace.nspname = 'public' AND relation.relkind IN ('r','p','v','m','S','f') GROUP BY relowner ORDER BY owner")
         owners = cursor.fetchall()
@@ -158,7 +161,7 @@ def provision_database_roles(config, operation, revision, directory, approved):
         with isolated_postgres_environment(), psycopg.connect(dbname="postgres", **connection_options) as control, psycopg.connect(dbname=database, **connection_options) as connection:
             with control.cursor() as cursor:
                 cursor.execute("SELECT pg_advisory_lock(193701, 5)")
-            before = {"roles": inspect_roles(control, roles), **inspect_schema(connection)}
+            before = {"roles": inspect_roles(control, roles), **inspect_schema(connection, data["postgresqlEntraAdministratorPrincipalName"])}
             plan = {"stage": 5, "action": "database-roles", "revision": revision, "configSha256": stage_fingerprint(config, 5), "serverId": server["id"], "database": database, "roles": roles, "before": before, "grants": {"llmgw_migrator": "CONNECT, CREATE database; own public schema with USAGE, CREATE; administrator receives migration-role membership", "llmgw_app": "CONNECT; public schema USAGE; table DML; sequence USAGE, SELECT; future migrator objects", "public": "transfer owner to llmgw_migrator and revoke CREATE from PUBLIC"}}
             digest = fingerprint(plan)
             summary = {"stage": 5, "action": "database-roles", "planSha256": digest, "stageAccepted": False}
@@ -170,7 +173,7 @@ def provision_database_roles(config, operation, revision, directory, approved):
                 control.commit()
                 grant_roles(connection, roles, database)
                 inspect_roles(control, roles)
-                inspect_schema(connection)
+                inspect_schema(connection, data["postgresqlEntraAdministratorPrincipalName"])
                 verify_grants(connection)
             else:
                 connection.rollback()

@@ -94,6 +94,13 @@ class DatabaseRoleTests(unittest.TestCase):
         self.assertEqual(result["schema"]["owner"], "azure_pg_admin")
         with self.assertRaisesRegex(ValueError, "Azure database owner"):
             inspect_schema(connection_with_owner("other_owner", "azure_pg_admin"))
+        # A database recreated after the Entra administrator exists is owned by that administrator.
+        recreated = inspect_schema(connection_with_owner("azure_pg_admin", "llmgw-db-admin"), "llmgw-db-admin")
+        self.assertEqual(recreated["schema"]["database_owner"], "llmgw-db-admin")
+        with self.assertRaisesRegex(ValueError, "Azure database owner"):
+            inspect_schema(connection_with_owner("azure_pg_admin", "someone-else"), "llmgw-db-admin")
+        with self.assertRaisesRegex(ValueError, "Azure database owner"):
+            inspect_schema(connection_with_owner("azure_pg_admin", "llmgw-db-admin"))
 
     def test_database_identity_config_only_invalidates_stage5_onwards(self):
         config = customer_config()

@@ -2,6 +2,7 @@ import ast
 import copy
 import hashlib
 import json
+import re
 import unittest
 import tempfile
 from pathlib import Path
@@ -34,6 +35,12 @@ def cosign_payload(image, runtime="azure", environment="test", **annotations):
 
 
 class BackendManifestTests(unittest.TestCase):
+
+    def test_l3_activation_accepts_exactly_the_backend_callbacks(self):
+        source = (Path(__file__).resolve().parents[1] / "l3-audit/src/activation.ts").read_text(encoding="utf-8")
+        declared = re.search(r"REVIEWED_CALLBACKS: readonly string\[\] = \[([^\]]*)\]", source)
+        self.assertIsNotNone(declared)
+        self.assertEqual(tuple(re.findall(r"'([^']+)'", declared.group(1))), BACKEND_CALLBACKS)
     def test_native_stage8_publishes_backend_only_with_spend_logs(self):
         config = backend_customer()
         config["application"]["authentication"] = {"mode": "native", "adminUsername": "gateway-admin"}

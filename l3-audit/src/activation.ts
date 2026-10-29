@@ -6,13 +6,20 @@ import { object, sha } from './record.js';
 
 const execute = promisify(execFile);
 type Document = Record<string, unknown>;
+// Request-compatibility callbacks reviewed for the backend image; mirrors BACKEND_CALLBACKS in scripts/backend_manifest.py.
+// They rewrite requests and record no content, so they do not change what the PG flag controls.
+export const REVIEWED_CALLBACKS: readonly string[] = ['LiteLLM.runtime.callbacks.codex_passthrough'];
+function reviewedCallbacks(value: unknown): boolean {
+  return value === undefined || value === null
+    || (Array.isArray(value) && value.every(item => typeof item === 'string' && REVIEWED_CALLBACKS.includes(item)));
+}
 export function pgConfiguration(text: string, enabled: boolean): string {
   let runtime: Document;
   try { runtime = object(yamlParse(text)); } catch { throw new Error('Runtime YAML is invalid; values withheld'); }
   const settings = object(runtime.general_settings);
   const logging = object(runtime.litellm_settings);
   if (settings.disable_spend_logs !== false || typeof settings.store_prompts_in_spend_logs !== 'boolean'
-    || logging.callbacks || logging.success_callback || logging.failure_callback) {
+    || !reviewedCallbacks(logging.callbacks) || logging.success_callback || logging.failure_callback) {
     throw new Error('Expected native Spend Logs baseline without unreviewed callbacks');
   }
   runtime.general_settings = { ...settings, store_prompts_in_spend_logs: !enabled };

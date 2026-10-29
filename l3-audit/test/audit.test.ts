@@ -427,4 +427,9 @@ test('PG activation changes only content flag and re-applies only the platform-o
     assert.throws(() => activationFor(snapshot(deployment([...managers]), config), 'new'), message);
   }
   assert.throws(() => pgConfiguration('general_settings: {}', true));
+  const callbacks = 'general_settings:\n  disable_spend_logs: false\n  store_prompts_in_spend_logs: true\nlitellm_settings:\n  callbacks:\n';
+  assert.equal(yamlParse(pgConfiguration(callbacks + '  - LiteLLM.runtime.callbacks.codex_passthrough\n', true)).litellm_settings.callbacks[0],
+    'LiteLLM.runtime.callbacks.codex_passthrough');
+  assert.throws(() => pgConfiguration(callbacks + '  - custom_logger.handler\n', true), /unreviewed callbacks/);
+  assert.throws(() => pgConfiguration(callbacks + '  - LiteLLM.runtime.callbacks.codex_passthrough\n  success_callback: [langfuse]\n', true));
 });

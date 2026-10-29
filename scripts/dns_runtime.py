@@ -114,10 +114,14 @@ def change_dns(config, action, operation, revision, directory, approved, *, clie
             plane: {"TTL": settings["ttl"], "CNAMERecord": {"cname": targets[plane]}, "metadata": {"managedBy": "llmgw-workflow"}}
             for plane in ("api", "admin")
         }
-        if checkpoint:
+        observed = {plane: current[plane]["properties"] if current[plane] else None for plane in ("api", "admin")}
+        # A completed rollback that left DNS exactly at its recorded pre-publish state may be published again
+        # with a fresh checkpoint; any other existing checkpoint is kept for separate recovery.
+        republish = bool(checkpoint) and checkpoint.get("phase") == "rolled-back" and observed == checkpoint.get("before")
+        if checkpoint and not republish:
             require(checkpoint.get("after") == desired and checkpoint.get("phase") != "rolled-back", "Existing DNS checkpoint must not be replaced")
         else:
-            checkpoint = {"scope": scope, "before": {plane: current[plane]["properties"] if current[plane] else None for plane in ("api", "admin")}, "after": desired, "phase": "prepared", "revision": revision}
+            checkpoint = {"scope": scope, "before": observed, "after": desired, "phase": "prepared", "revision": revision}
     else:
         require(checkpoint, "No approved DNS checkpoint exists")
         desired = checkpoint["before"]
@@ -128,7 +132,9 @@ def change_dns(config, action, operation, revision, directory, approved, *, clie
     if operation == "execute":
         require(approved == summary["planSha256"], "DNS plan changed or was not approved")
         require(client.read() == current, "DNS changed since plan")
-        if action == "dns-publish" and client.checkpoint() is None:
+        if action == "dns-publish" and client.checkpoint() != checkpoint:
+            saved = client.checkpoint()
+            require(saved is None or (saved.get("phase") == "rolled-back" and saved.get("before") == checkpoint["before"]), "DNS checkpoint changed before update")
             client.save(checkpoint)
         require(client.checkpoint() == checkpoint, "DNS checkpoint changed before update")
         for plane in ("api", "admin"):

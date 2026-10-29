@@ -52,7 +52,18 @@ class DnsTests(unittest.TestCase):
             self.assertEqual(client.saved["phase"], "rolled-back")
             retry = change_dns(config, "dns-rollback", "plan", "a" * 40, path, "", client=client, edge=edge)
             change_dns(config, "dns-rollback", "execute", "a" * 40, path, retry["planSha256"], client=client, edge=edge)
+            # A clean rollback can be published again with a fresh checkpoint; the rolled-back one is replaced.
+            again = change_dns(config, "dns-publish", "plan", "a" * 40, path, "", client=client, edge=edge)
+            change_dns(config, "dns-publish", "execute", "a" * 40, path, again["planSha256"], client=client, edge=edge)
+            self.assertEqual(client.saved["phase"], "published")
+            self.assertEqual(client.saved["before"], {plane: original[plane]["properties"] for plane in original})
+            self.assertEqual(client.records["api"]["properties"]["CNAMERecord"]["cname"], "api.azurefd.net")
+            rollback = change_dns(config, "dns-rollback", "plan", "a" * 40, path, "", client=client, edge=edge)
+            change_dns(config, "dns-rollback", "execute", "a" * 40, path, rollback["planSha256"], client=client, edge=edge)
+            # After a rollback, DNS edited by someone else is never republished over.
             client.records["admin"]["properties"]["TTL"] = 99
+            with self.assertRaisesRegex(ValueError, "modified externally"):
+                change_dns(config, "dns-publish", "plan", "a" * 40, path, "", client=client, edge=edge)
             with self.assertRaisesRegex(ValueError, "modified externally"):
                 change_dns(config, "dns-rollback", "plan", "a" * 40, path, "", client=client, edge=edge)
             duplicated = {**edge, "adminEndpointHost": edge["endpointHost"]}

@@ -1,6 +1,6 @@
 {
-  "version": "v3.7.13",
+  "version": "v3.7.16",
   "source": "docker.io/library/traefik",
-  "digest": "sha256:f86a2cab1b5c649070c49f883c743dd32d8485a56e3368c5f93b9e91f1e91259",
+  "digest": "sha256:abb2b9c1b132b5b0be40d09c85bf8d3dab2a59fa0eb3aa955ab8be5efbb73de6",
   "repository": "platform/traefik"
 }

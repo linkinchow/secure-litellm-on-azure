@@ -1,4 +1,4 @@
-ARG NODE_IMAGE=node@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e
+ARG NODE_IMAGE=node@sha256:c86ecead9e55a5210ac1727de38a4ca840bf03dcaf34dc9749addbf383b1920c
 FROM ${NODE_IMAGE} AS build
 WORKDIR /app
 COPY package.json package-lock.json tsconfig.json ./

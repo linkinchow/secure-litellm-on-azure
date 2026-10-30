@@ -43,6 +43,8 @@ def release_checks(config):
     mode = config.get("auditMode", "l3")
     if "optionalL3Enabled" in config and type(config["optionalL3Enabled"]) is not bool:
         raise ValueError("optionalL3Enabled must be a boolean")
+    if "optionalL3AlertsEnabled" in config and type(config["optionalL3AlertsEnabled"]) is not bool:
+        raise ValueError("optionalL3AlertsEnabled must be a boolean")
     if mode not in {"l3", "native"}:
         raise ValueError("Release auditMode must be native or l3")
     authentication = config.get("authenticationMode", "entra")
@@ -64,7 +66,9 @@ def release_checks(config):
                 required.remove("telemetry_alerts")
                 required.add("telemetry_disabled")
     if config.get("optionalL3Enabled") is True and phase != "prepare":
-        required.update({"l3_protocol_capture", "l3_delivery_recovery", "l3_query_hold", "l3_alerts"})
+        required.update({"l3_protocol_capture", "l3_delivery_recovery", "l3_query_hold"})
+        # Like telemetry: deployed alerts need tested notification evidence; an approved opt-out needs a decision record.
+        required.add("l3_alerts" if config.get("optionalL3AlertsEnabled", True) else "l3_alerts_disabled")
     if config.get("edgeType", "frontDoor") == "applicationGateway":
         required.difference_update({"private_link_approval", "admin_private_origin_isolation"})
         required.update({"app_gateway_backend_health", "admin_listener_isolation"})

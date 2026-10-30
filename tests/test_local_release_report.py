@@ -95,6 +95,21 @@ class ReleaseReportTests(unittest.TestCase):
                     self.generate()
                 self.azure.scoped.return_value["parameters"][field]["value"] = actual
 
+    def test_optional_l3_alert_state_comes_from_the_l3_deployment(self):
+        self.config["l3Audit"] = {"enabled": True}
+        edge = copy.deepcopy(self.azure.scoped.return_value)
+        for alerts, expected in (("", False), ("/subscriptions/x/resourceGroups/rg/providers/microsoft.insights/actionGroups/l3", True)):
+            with self.subTest(alerts=alerts):
+                self.azure.scoped.side_effect = [edge, {"state": "Succeeded", "alerts": alerts}]
+                report = self.generate()
+                self.assertTrue(report["optionalL3Enabled"])
+                self.assertIs(report["optionalL3AlertsEnabled"], expected)
+                self.assertEqual(self.azure.scoped.call_args.args[0][6], "optional-l3")
+        self.azure.scoped.side_effect = [edge, {"state": "Failed", "alerts": ""}]
+        with self.assertRaisesRegex(MigrationError, "Optional L3 deployment"):
+            self.generate()
+        self.azure.scoped.side_effect = None
+
     def test_prod_report_requires_passing_evidence_for_every_check(self):
         self.config["environment"] = "prod"
         with self.assertRaisesRegex(MigrationError, "evidence-dir"):

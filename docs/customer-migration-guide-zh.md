@@ -1608,7 +1608,7 @@ origin为API和Admin各创建一条Private Link Service并绑定不同内部LB f
 | --- | --- |
 | prepare | private_origin_tls、origin_bypass_denied、admin_source_ip_allowlist、admin_private_origin_isolation、waf_diagnostics_privacy、private_link_approval、rollback_plan |
 | dev/test native canary | 无必填checks；使用报告元数据、批准信息及S9-07实时门禁 |
-| prod native canary | native_virtual_key_acl、native_admin_password_login、required_protocol_matrix、database_restore、waf_detection_review、approved_pilot_clients、native_spend_logs、native_audit_access、native_retention_recovery；启用collector用telemetry_alerts，否则telemetry_disabled |
+| prod native canary | native_virtual_key_acl、native_admin_password_login、required_protocol_matrix、database_restore、waf_detection_review、approved_pilot_clients、native_spend_logs、native_audit_access、native_retention_recovery；启用collector用telemetry_alerts，否则telemetry_disabled；已启用可选L3时另加l3_protocol_capture、l3_delivery_recovery、l3_query_hold，以及告警开启时的l3_alerts或`enableAlerts=false`时的l3_alerts_disabled决策记录（报告生成器按`optional-l3`部署输出判断） |
 | native production | canary_slo、waf_prevention_review、dns_cutover_and_rollback |
 
 dev/test canary报告元数据和批准信息完成后即可执行下列S9-07/08，不需要先完成第5节；prod canary/production须再满足对应严格证据。每次phase变化先更新已审核MIGRATION_RELEASE_JSON并重新plan；普通S9-03的禁用计划不能批准启流量。若以后进入无损production迁移，再先完成第5节并使用production报告。

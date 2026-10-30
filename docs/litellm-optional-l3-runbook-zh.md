@@ -232,7 +232,7 @@ AKS没有内置ZRS磁盘StorageClass，沿用`managed-csi`的LRS盘会把副本�
    同时确认AKS OIDC及Workload Identity启用，不手填Issuer。
 3. 管理员填已有IT组的Object ID，不是Client ID。模板只在审计账号、目标workspace授权，
    管理员可读写审计正文并管理legal hold，**不是新的独立调查员权限体系**。
-4. `alertEmail`由第3.1节自动填入；部署身份须有目标RG内Action Group写入权限。客户明确不需要告警时，在参数文件中加`"enableAlerts": {"value": false}`：不创建Action Group和两条日志告警，`alertEmail`可留空；L3健康状况改为通过`L3Audit_CL`查询和运维巡检确认。开启告警时，收件人须在部署后30分钟内完成邮件验证，否则收不到通知。
+4. `alertEmail`由第3.1节自动填入；部署身份须有目标RG内Action Group写入权限。客户明确不需要告警时，在参数文件中加`"enableAlerts": {"value": false}`：不创建Action Group和两条日志告警，`alertEmail`可留空；L3健康状况改为通过`L3Audit_CL`查询和运维巡检确认。prod发布报告据此把`l3_alerts`换成`l3_alerts_disabled`：提交客户批准关闭告警及巡检安排的决策记录，而不是告警通知证据。开启告警时，收件人须在部署后30分钟内完成邮件验证，否则收不到通知。
    Bicep创建专用Action Group，不复用Smart Detection或旧环境接收者。告警在部署后生效，
    初期无心跳告警属于预期；服务就绪后必须验证告警恢复及真实通知送达。
 5. **先盘点现有AMPLS。一个VNet不能关联不同AMPLS。** 已有时填写其实际名称，

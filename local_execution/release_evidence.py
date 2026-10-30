@@ -24,7 +24,7 @@ from urllib.parse import urlsplit, urlunsplit
 from scripts.customer_migration import ROOT, require
 from scripts.migration_deploy import deployment_name
 
-DECISIONS = ("telemetry_disabled", "approved_pilot_clients", "rollback_plan", "database_restore")
+DECISIONS = ("telemetry_disabled", "approved_pilot_clients", "rollback_plan", "database_restore", "l3_alerts_disabled")
 ADMIN_ONLY_PREFIXES = ("/ui", "/key", "/spend", "/login", "/fallback", "/user", "/team")
 
 def az(config, *arguments):

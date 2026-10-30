@@ -66,6 +66,26 @@ class Stage9ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "authenticationMode"):
             validate_release(invalid)
 
+    def test_optional_l3_alert_opt_out_needs_a_decision_instead_of_alert_evidence(self):
+        config = evidence_config(environment="prod")
+        config.update(auditMode="native", telemetryEnabled=False, authenticationMode="native", optionalL3Enabled=True)
+        enabled = release_checks(config)
+        self.assertTrue({"l3_protocol_capture", "l3_delivery_recovery", "l3_query_hold", "l3_alerts"} <= enabled)
+        self.assertNotIn("l3_alerts_disabled", enabled)
+        config["optionalL3AlertsEnabled"] = False
+        disabled = release_checks(config)
+        self.assertTrue({"l3_protocol_capture", "l3_delivery_recovery", "l3_query_hold", "l3_alerts_disabled"} <= disabled)
+        self.assertNotIn("l3_alerts", disabled)
+        config["checks"] = {name: {"passed": True, "observedAt": datetime.now(timezone.utc).isoformat(), "report": "synthetic://l3"} for name in disabled}
+        validate_release(config)
+        del config["checks"]["l3_alerts_disabled"]
+        with self.assertRaisesRegex(ValueError, "l3_alerts_disabled"):
+            validate_release(config)
+        config["optionalL3AlertsEnabled"] = "false"
+        with self.assertRaisesRegex(ValueError, "optionalL3AlertsEnabled"):
+            release_checks(config)
+        self.assertNotIn("l3_alerts_disabled", release_checks({**config, "optionalL3AlertsEnabled": False, "phase": "prepare"}))
+
     def test_native_release_requires_real_native_checks_not_l3_placeholders(self):
         config = evidence_config(environment="prod")
         config.update(auditMode="native", telemetryEnabled=False)

@@ -81,6 +81,14 @@ def generate_report(config, settings, revision, change_ticket, approvers, azure,
     }
     if "l3Audit" in config:
         report["optionalL3Enabled"] = True
+        # The optional-l3 template outputs an empty action group ID when enableAlerts=false.
+        l3 = azure.scoped([
+            "deployment", "group", "show", "--resource-group", config["target"]["resourceGroup"],
+            "--name", "optional-l3", "--query", "{state:properties.provisioningState,alerts:properties.outputs.alertActionGroupId.value}",
+        ])
+        require(isinstance(l3, dict) and l3.get("state") == "Succeeded" and isinstance(l3.get("alerts"), str),
+                "Optional L3 deployment must be Succeeded with an alertActionGroupId output")
+        report["optionalL3AlertsEnabled"] = bool(l3["alerts"])
     mode, eligible = approval_policy(config)
     count = 1 if mode == "single-operator" else 2
     require(len(approvers) == count, "Approval count differs from the configured policy")

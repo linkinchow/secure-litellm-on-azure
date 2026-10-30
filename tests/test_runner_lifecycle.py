@@ -18,7 +18,7 @@ from scripts.runner_lifecycle import GitHubRunnerRegistration, enroll_runner, re
 class RunnerLifecycleTests(unittest.TestCase):
     def test_standard_runner_network_modes_preserve_existing_subnet(self):
         entry = (ROOT / "infra/private-runner/deploy.bicep").read_text()
-        self.assertIn("@allowed(['Standard_D4s_v3', 'Standard_D4s_v5', 'Standard_D8s_v5'])", entry)
+        self.assertIn("@allowed(['Standard_D2s_v5', 'Standard_D4s_v3', 'Standard_D4s_v5', 'Standard_D8s_v5'])", entry)
         self.assertIn("param virtualMachineSize string = 'Standard_D4s_v3'", entry)
         self.assertIn("param subnetResourceId string = ''", entry)
         self.assertIn("param createBastion bool = empty(subnetResourceId)", entry)

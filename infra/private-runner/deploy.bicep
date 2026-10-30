@@ -22,7 +22,8 @@ param environmentName string = 'test'
 
 param location string = deployment().location
 
-@allowed(['Standard_D4s_v3', 'Standard_D4s_v5', 'Standard_D8s_v5'])
+@description('Standard_D2s_v5 (2 vCPU/8 GiB) is a customer-approved cost floor: image builds and large restores run slower.')
+@allowed(['Standard_D2s_v5', 'Standard_D4s_v3', 'Standard_D4s_v5', 'Standard_D8s_v5'])
 param virtualMachineSize string = 'Standard_D4s_v3'
 
 @minValue(128)

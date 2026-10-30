@@ -86,7 +86,7 @@ az deployment sub create \
 | `managementAddressPrefix` | `10.50.0.0/24` | 仅新建模式使用，替换为不重叠的私有IPv4 /24 |
 | `createBastion` | 新建为true，复用为false | 新建可关闭，但须自行提供私网管理连接；复用模式即使传true也不创建Bastion |
 | `sshSourceCidr` | 空 | 自建Bastion模式自动选Bastion子网；其他模式为空则拒绝SSH |
-| `virtualMachineSize` | `Standard_D4s_v3`，4 vCPU/16 GiB | 可选`Standard_D4s_v5`或`Standard_D8s_v5`；需区域可用、订阅配额并支持模板中的安全能力 |
+| `virtualMachineSize` | `Standard_D4s_v3`，4 vCPU/16 GiB | 可选`Standard_D4s_v5`或`Standard_D8s_v5`；客户批准降本时可选`Standard_D2s_v5`（2 vCPU/8 GiB，镜像构建、扫描和大库恢复更慢，不同时跑多个重任务）；需区域可用、订阅配额并支持模板中的安全能力 |
 | `osDiskSizeGiB` | 128 | 只能按批准容量增加，不缩小已有磁盘 |
 | `dataDiskSizeGiB` | 256 | 根据数据库和镜像空间增大；已建盘扩容后仍须单独扩展文件系统 |
 | `ubuntuImageVersion` | `latest` | 可指定已批准的Canonical版本；此入口是标准镜像初始化，不是不可变工具链镜像工厂 |
@@ -141,7 +141,7 @@ GitHub中确认Idle后，将输出`runnerLabels`的数组值填入Repository Var
 | 操作系统 | Ubuntu 24.04 LTS，正常安装安全补丁，使用systemd管理runner服务 |
 | 架构 | x86-64 / amd64，GitHub标签为`X64`；本次不采用ARM或Alpine宿主机 |
 | CPU/内存 | 起步4 vCPU、16 GiB；经常同时处理镜像构建和较大数据库时建议8 vCPU、32 GiB |
-| Azure规格示例 | 默认`Standard_D4s_v3`；区域允许时可用`Standard_D4s_v5`，扩大时可用`Standard_D8s_v5`。以区域可用性、配额及实测为准 |
+| Azure规格示例 | 默认`Standard_D4s_v3`；区域允许时可用`Standard_D4s_v5`，扩大时可用`Standard_D8s_v5`；客户批准的最低成本选项为`Standard_D2s_v5`。以区域可用性、配额及实测为准 |
 | 系统盘 | 建议128 GiB；安装OS、基础工具和runner程序 |
 | 工作数据盘 | 建议从256 GiB SSD起步，承载Actions工作目录、Docker数据及临时备份，按下文核算后扩容 |
 | 磁盘保护 | 使用加密持久磁盘；不要把客户备份放在临时盘、无加密共享目录或普通artifact中 |
